@@ -10,6 +10,7 @@ void reportGPIO(uint8_t myId, uint16_t gpio);
 #else
 void initOutput();
 void setGPIOValue(uint32_t v);
+void togglePin(uint8_t pin);
 void setGPIO(int byteNum, uint8_t value);
 void setPin(uint8_t pin, uint8_t val);
 #endif

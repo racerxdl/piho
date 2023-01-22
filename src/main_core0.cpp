@@ -4,6 +4,7 @@
 #include "io.h"
 #include "global.h"
 #include "uart.h"
+#include "storage.h"
 
 
 void initGPIO() {
@@ -38,22 +39,34 @@ void onGPIOSet(uint32_t gpio) {
 void setup() {
     Serial.begin(115200);
     delay(5000);
+
     #ifdef IS_INPUT_DEVICE
     Serial.println("( ALL) Device is INPUT");
     #else
     Serial.println("( ALL) Device is OUTPUT");
     #endif
+
     Serial.printf("( ALL) Device ID: %08x\n", getAddr());
     initGPIO();
     piho0.setOnHealthCheck(healthCheckAction);
     piho0.setOnGPIOSet(onGPIOSet);
     piho0.SetID(getAddr());
+
     #ifndef IS_INPUT_DEVICE
     piho0.setOnPinSet(setPin);
     piho0.setOnByteSet(setGPIO);
     #endif
+
     piho0.Start();
+    Serial.println("( ALL) Initializing FS");
+    config.begin();
     Serial.println("( ALL) Started...");
+
+    // config.AddMap(0, 0, 0, Triggers{1,4,5,NO_PIN,NO_PIN,NO_PIN,NO_PIN,NO_PIN});
+    // config.AddMap(0, 0, 1, Triggers{4,3,2,NO_PIN,NO_PIN,NO_PIN,NO_PIN,NO_PIN});
+    // config.AddMap(1, 0, 2, Triggers{7,8,9,NO_PIN,NO_PIN,NO_PIN,NO_PIN,NO_PIN});
+    // config.AddMap(0, 5, 0, Triggers{4,3,2,NO_PIN,NO_PIN,NO_PIN,NO_PIN,NO_PIN});
+    // config.Save();
 }
 
 void loop() {

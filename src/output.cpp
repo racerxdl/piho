@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "piho.h"
 #include "config.h"
+#include "io.h"
 
 #ifndef IS_INPUT_DEVICE
 
@@ -11,6 +12,15 @@ void initOutput() {
     for (int i = 0; i < 16; i++) {
         pinMode(i, OUTPUT);
     }
+}
+
+void togglePin(uint8_t pin) {
+    if (BIT(lastValue, pin)) {
+        CLRBIT(lastValue, pin);
+    } else {
+        SETBIT(lastValue, pin);
+    }
+    setGPIOValue(lastValue);
 }
 
 void setGPIOValue(uint32_t v) {
