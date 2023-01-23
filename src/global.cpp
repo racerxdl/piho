@@ -21,8 +21,8 @@ void initPins() {
     byteNumStart = pinNumStart / 8;
     byteNumEnd = pinNumEnd / 8;
 
-    Serial.printf("( ALL) Pin Range: %02d -> %02d\n", pinNumStart, pinNumEnd);
-    Serial.printf("( ALL) Byte Range: %02d -> %02d\n", byteNumStart, byteNumEnd);
+    Serial.printf("( ALL) Pin Range: %02d -> %02d\r\n", pinNumStart, pinNumEnd);
+    Serial.printf("( ALL) Byte Range: %02d -> %02d\r\n", byteNumStart, byteNumEnd);
 }
 
 bool pinInDevice(uint16_t pin) {

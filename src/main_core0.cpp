@@ -46,7 +46,7 @@ void setup() {
     Serial.println("( ALL) Device is OUTPUT");
     #endif
 
-    Serial.printf("( ALL) Device ID: %08x\n", getAddr());
+    Serial.printf("( ALL) Device ID: %08x\r\n", getAddr());
     initGPIO();
     piho0.setOnHealthCheck(healthCheckAction);
     piho0.setOnGPIOSet(onGPIOSet);

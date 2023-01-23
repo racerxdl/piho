@@ -125,7 +125,7 @@ void PihoController::checkRX() {
                 break;
         }
     } else {
-        Serial.println("forward to uart");
+        // Serial.println("forward to uart");
         // Forward mode, packet not for us.
         if (MsgID == IO_IN) {
             // Report to UART
