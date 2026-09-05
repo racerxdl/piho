@@ -41,6 +41,8 @@ One physical transition produces one source event token. Every action emitted fr
 
 A route connects one source and edge selector to one or more actions. One source event may emit at most 16 actions.
 
+A rising transition matches both `rising` and `changed` routes; a falling transition matches both `falling` and `changed` routes. The 16-action limit applies to their combined output. The compiler rejects a graph that would emit the same action ID through both matching selectors, so one physical transition never invokes one action twice.
+
 Fan-out is represented by multiple actions on one route. Fan-in is represented by multiple independently owned source routes that reference the same action. There is no implicit shared evaluator and no broadcast evaluation.
 
 Format 1 does not contain arbitrary boolean joins, cycles, scripts, expressions, schedules, HTTP calls, MQTT calls, or cross-device mutable variables. Those remain host-side behavior. A later executor API may add explicit stateful primitives, but format-1 compilers must reject them rather than approximate them.

@@ -144,6 +144,8 @@ struct GraphManifest {
 };
 
 struct GraphIdentity {
+    uint16_t format = 0;
+    uint16_t executorApi = 0;
     uint32_t generation = 0;
     uint32_t checksum = 0;
 };
@@ -160,6 +162,7 @@ struct LocalGraphRoute {
 struct LocalInputGraph {
     GraphIdentity identity{};
     uint8_t device = 0;
+    GraphDeviceRole role = GraphDeviceRole::Input;
     uint16_t inputCount = 0;
     uint16_t routeCount = 0;
     uint16_t actionReferenceCount = 0;
@@ -177,6 +180,7 @@ struct LocalOutputGraph {
     GraphIdentity identity{};
     uint8_t device = 0;
     uint16_t actionCount = 0;
+    GraphDeviceRole role = GraphDeviceRole::Output;
     GraphActionRecord actions[kGraphLocalActionCapacity]{};
     uint16_t actionSlotById[kGraphActionCapacity + 1]{};
 

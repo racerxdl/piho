@@ -663,11 +663,14 @@ GraphImageError GraphImageCodec::loadInputSection(const GraphImageSource &source
 
     staging.identity = GraphIdentity{};
     staging.device = deviceId;
+    staging.role = device->role;
     staging.inputCount = device->inputCount;
     staging.routeCount = device->routeCount;
     staging.actionReferenceCount = 0;
     staging.referencedActionCount = 0;
     std::memset(staging.actionSlotById, 0, sizeof(staging.actionSlotById));
+    staging.identity.format = verified.format;
+    staging.identity.executorApi = verified.executorApi;
     staging.identity.generation = verified.generation;
     staging.identity.checksum = verified.checksum;
     for (uint16_t index = 0; index < device->inputCount; ++index) {
@@ -762,8 +765,11 @@ GraphImageError GraphImageCodec::loadOutputSection(const GraphImageSource &sourc
 
     staging.identity = GraphIdentity{};
     staging.device = deviceId;
+    staging.role = device->role;
     staging.actionCount = device->actionCount;
     std::memset(staging.actionSlotById, 0, sizeof(staging.actionSlotById));
+    staging.identity.format = verified.format;
+    staging.identity.executorApi = verified.executorApi;
     staging.identity.generation = verified.generation;
     staging.identity.checksum = verified.checksum;
     for (uint16_t index = 0; index < device->actionCount; ++index) {

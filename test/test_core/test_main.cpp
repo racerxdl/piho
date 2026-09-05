@@ -12,6 +12,7 @@
 #include "piho/trigger_storage_codec.h"
 
 void runGraphImageTests();
+void runFlowEngineTests();
 
 namespace {
 
@@ -403,5 +404,6 @@ int main() {
     RUN_TEST(test_controller_maps_global_outputs_and_avoids_self_echo);
     RUN_TEST(test_controller_dispatches_only_valid_addressed_frames);
     runGraphImageTests();
+    runFlowEngineTests();
     return UNITY_END();
 }

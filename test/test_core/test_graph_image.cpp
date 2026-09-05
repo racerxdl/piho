@@ -88,8 +88,12 @@ void test_graph_codec_decodes_shared_golden_image() {
         static_cast<uint8_t>(piho::GraphImageError::None),
         static_cast<uint8_t>(piho::GraphImageCodec::loadInputSection(source, manifest, 1, localInput)));
     TEST_ASSERT_EQUAL_UINT32(1, localInput.identity.generation);
+    TEST_ASSERT_EQUAL_UINT16(1, localInput.identity.format);
+    TEST_ASSERT_EQUAL_UINT16(1, localInput.identity.executorApi);
     TEST_ASSERT_EQUAL_HEX32(0xAE85369A, localInput.identity.checksum);
     TEST_ASSERT_EQUAL_UINT8(1, localInput.device);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphDeviceRole::Input),
+                            static_cast<uint8_t>(localInput.role));
     TEST_ASSERT_EQUAL_UINT16(1, localInput.inputCount);
     TEST_ASSERT_EQUAL_UINT16(2, localInput.routeCount);
     TEST_ASSERT_EQUAL_UINT16(3, localInput.actionReferenceCount);
@@ -133,6 +137,10 @@ void test_graph_codec_decodes_shared_golden_image() {
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(piho::GraphImageError::None),
         static_cast<uint8_t>(piho::GraphImageCodec::loadOutputSection(source, manifest, 7, localOutput)));
+    TEST_ASSERT_EQUAL_UINT16(1, localOutput.identity.format);
+    TEST_ASSERT_EQUAL_UINT16(1, localOutput.identity.executorApi);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphDeviceRole::Output),
+                            static_cast<uint8_t>(localOutput.role));
     TEST_ASSERT_EQUAL_UINT8(7, localOutput.device);
     TEST_ASSERT_EQUAL_UINT16(3, localOutput.actionCount);
     TEST_ASSERT_NOT_NULL(localOutput.findAction(2));

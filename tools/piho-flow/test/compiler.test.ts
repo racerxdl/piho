@@ -380,7 +380,24 @@ describe("strict validation", () => {
       },
     };
     expect(() => compileFlowDocument(source)).toThrow(
-      'flows.beta: source event "button:rising" emits 17 actions across flows; maximum is 16',
+      'flows.beta: source event "button:rising" emits 17 actions across matching routes; maximum is 16',
+    );
+  });
+
+  test("rejects duplicate actions across changed and directional routes", () => {
+    const source = validSource();
+    source.flows = {
+      alpha_changed: {
+        when: [{ input: "button", edge: "changed" }],
+        actions: ["relay"],
+      },
+      beta_rising: {
+        when: [{ input: "button", edge: "rising" }],
+        actions: ["relay"],
+      },
+    };
+    expect(() => compileFlowDocument(source)).toThrow(
+      "flows.beta_rising: action 1 would execute more than once for one rising transition",
     );
   });
 
@@ -391,7 +408,7 @@ describe("strict validation", () => {
       (_, index) => `action_${index.toString().padStart(3, "0")}`,
     );
     source.inputs = Object.fromEntries(
-      Array.from({ length: 3 }, (_, index) => [
+      Array.from({ length: 9 }, (_, index) => [
         `button_${index}`,
         { device: "input_board", pin: index, debounceMs: 25 },
       ]),
@@ -408,12 +425,10 @@ describe("strict validation", () => {
         },
       ]),
     );
-    const eventTriggers = [0, 1, 2].flatMap((input) =>
-      ["rising", "falling", "changed"].map((edge) => ({
-        input: `button_${input}`,
-        edge,
-      })),
-    );
+    const eventTriggers = Array.from({ length: 9 }, (_, input) => ({
+      input: `button_${input}`,
+      edge: "rising",
+    }));
     source.flows = Object.fromEntries(
       eventTriggers.map((trigger, index) => [
         `flow_${index}`,

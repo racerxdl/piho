@@ -136,8 +136,8 @@ export function compileGraphModel(document: ValidatedFlowDocument): CompiledGrap
   const flows = [...document.flows].sort((left, right) => compareText(left.name, right.name));
   const usedInputs = new Set<string>();
   const usedActions = new Set<string>();
-  const routeActionKeys = new Set<string>();
-  const actionCountByEvent = new Map<string, number>();
+  const actionKeysByPhysicalEvent = new Set<string>();
+  const actionCountByPhysicalEvent = new Map<string, number>();
   const routes: CompiledRoute[] = [];
   for (let flowIndex = 0; flowIndex < flows.length; flowIndex += 1) {
     const flow = flows[flowIndex];
@@ -171,15 +171,20 @@ export function compileGraphModel(document: ValidatedFlowDocument): CompiledGrap
         fail(`flows.${flow.name}.when`, `references unknown input ${JSON.stringify(trigger.input)}`);
       }
       usedInputs.add(trigger.input);
-      const eventKey = `${input.id}:${trigger.edge}`;
-      const eventActionCount = (actionCountByEvent.get(eventKey) ?? 0) + resolvedActions.length;
-      if (eventActionCount > GRAPH_LIMITS.actionsPerEvent) {
-        fail(
-          `flows.${flow.name}`,
-          `source event ${JSON.stringify(triggerKey)} emits ${eventActionCount} actions across flows; maximum is ${GRAPH_LIMITS.actionsPerEvent}`,
-        );
+      const physicalEdges: readonly Edge[] =
+        trigger.edge === "changed" ? ["rising", "falling"] : [trigger.edge];
+      for (const physicalEdge of physicalEdges) {
+        const eventKey = `${input.id}:${physicalEdge}`;
+        const eventActionCount =
+          (actionCountByPhysicalEvent.get(eventKey) ?? 0) + resolvedActions.length;
+        if (eventActionCount > GRAPH_LIMITS.actionsPerEvent) {
+          fail(
+            `flows.${flow.name}`,
+            `source event ${JSON.stringify(`${trigger.input}:${physicalEdge}`)} emits ${eventActionCount} actions across matching routes; maximum is ${GRAPH_LIMITS.actionsPerEvent}`,
+          );
+        }
+        actionCountByPhysicalEvent.set(eventKey, eventActionCount);
       }
-      actionCountByEvent.set(eventKey, eventActionCount);
       for (const action of resolvedActions) {
         if (action.operation === "copy_source" && trigger.edge !== "changed") {
           fail(
@@ -187,14 +192,16 @@ export function compileGraphModel(document: ValidatedFlowDocument): CompiledGrap
             `copy_source action ${action.id} requires every trigger edge to be changed`,
           );
         }
-        const routeActionKey = `${input.id}:${trigger.edge}:${action.id}`;
-        if (routeActionKeys.has(routeActionKey)) {
-          fail(
-            `flows.${flow.name}`,
-            "duplicates an input, edge, and action combination from another flow",
-          );
+        for (const physicalEdge of physicalEdges) {
+          const eventActionKey = `${input.id}:${physicalEdge}:${action.id}`;
+          if (actionKeysByPhysicalEvent.has(eventActionKey)) {
+            fail(
+              `flows.${flow.name}`,
+              `action ${action.id} would execute more than once for one ${physicalEdge} transition`,
+            );
+          }
+          actionKeysByPhysicalEvent.add(eventActionKey);
         }
-        routeActionKeys.add(routeActionKey);
       }
 
       routes.push({
