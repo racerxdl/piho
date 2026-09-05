@@ -16,16 +16,43 @@ void encodeUint16(uint16_t value, uint8_t *output) {
     output[1] = static_cast<uint8_t>((value >> 8) & 0xFFu);
 }
 
+void encodeUint32(uint32_t value, uint8_t *output) {
+    for (uint8_t byte = 0; byte < 4; ++byte) {
+        output[byte] = static_cast<uint8_t>((value >> (byte * 8)) & 0xFFu);
+    }
+}
+
 uint16_t decodeUint16(const uint8_t *input) {
-    return static_cast<uint16_t>(input[0]) | static_cast<uint16_t>(static_cast<uint16_t>(input[1]) << 8);
+    return static_cast<uint16_t>(input[0]) |
+           static_cast<uint16_t>(static_cast<uint16_t>(input[1]) << 8);
+}
+
+uint32_t decodeUint32(const uint8_t *input) {
+    uint32_t value = 0;
+    for (uint8_t byte = 0; byte < 4; ++byte) {
+        value |= static_cast<uint32_t>(input[byte]) << (byte * 8);
+    }
+    return value;
+}
+
+bool validAckStatus(ActionAckStatus status) {
+    return status == ActionAckStatus::Executed || status == ActionAckStatus::AlreadyExecuted ||
+           status == ActionAckStatus::WrongGeneration ||
+           status == ActionAckStatus::UnknownAction || status == ActionAckStatus::WrongTarget ||
+           status == ActionAckStatus::InvalidAction ||
+           status == ActionAckStatus::UnavailableOutput;
 }
 
 bool acceptsBroadcast(MessageType type) {
     return type == MessageType::HealthCheck || type == MessageType::Reset;
 }
 
-bool validDevice(MessageType type, uint8_t device) {
-    return isPhysicalDevice(device) || (device == kBroadcastDevice && acceptsBroadcast(type));
+bool validDevice(MessageType type, uint8_t encodedDevice) {
+    if (type == MessageType::ActionAck) {
+        return isPhysicalDevice(static_cast<uint8_t>(encodedDevice & 0x1Fu));
+    }
+    return isPhysicalDevice(encodedDevice) ||
+           (encodedDevice == kBroadcastDevice && acceptsBroadcast(type));
 }
 
 uint8_t expectedLength(MessageType type) {
@@ -42,6 +69,9 @@ uint8_t expectedLength(MessageType type) {
         case MessageType::UpsertTrigger:
         case MessageType::RemoveTrigger:
             return 3;
+        case MessageType::ExecuteAction:
+        case MessageType::ActionAck:
+            return 8;
     }
     return 0xFF;
 }
@@ -57,6 +87,8 @@ bool knownType(uint8_t rawType, MessageType &type) {
         case MessageType::UpsertTrigger:
         case MessageType::RemoveTrigger:
         case MessageType::ClearTriggers:
+        case MessageType::ExecuteAction:
+        case MessageType::ActionAck:
             type = static_cast<MessageType>(rawType);
             return true;
     }
@@ -154,6 +186,49 @@ bool ProtocolCodec::clearTriggers(uint8_t targetDevice, CanFrame &frame) {
     return true;
 }
 
+bool ProtocolCodec::executeAction(const ActionRequest &request, CanFrame &frame) {
+    if (request.generation == 0 || request.eventToken == 0 ||
+        request.eventToken > kActionEventTokenMaximum || request.actionId == 0 ||
+        request.actionId > kGraphActionCapacity || !isPhysicalDevice(request.sourceDevice) ||
+        !isPhysicalDevice(request.targetDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::ExecuteAction, request.targetDevice);
+    frame.length = 8;
+    encodeUint32(request.generation, frame.data);
+    const uint32_t packed =
+        static_cast<uint32_t>(request.actionId - 1) |
+        (request.eventToken << 9) |
+        (static_cast<uint32_t>(request.sourceDevice) << 26) |
+        (request.sourceValue ? 0x80000000u : 0u);
+    encodeUint32(packed, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::actionAcknowledgement(const ActionAcknowledgement &acknowledgement,
+                                          CanFrame &frame) {
+    if (acknowledgement.generation == 0 || acknowledgement.eventToken == 0 ||
+        acknowledgement.eventToken > kActionEventTokenMaximum ||
+        acknowledgement.actionId == 0 || acknowledgement.actionId > kGraphActionCapacity ||
+        !isPhysicalDevice(acknowledgement.sourceDevice) ||
+        !isPhysicalDevice(acknowledgement.outputDevice) ||
+        !validAckStatus(acknowledgement.status)) {
+        return false;
+    }
+    const uint8_t encodedDevice =
+        static_cast<uint8_t>(acknowledgement.sourceDevice |
+                             (static_cast<uint8_t>(acknowledgement.status) << 5));
+    frame = makeFrame(MessageType::ActionAck, encodedDevice);
+    frame.length = 8;
+    encodeUint32(acknowledgement.generation, frame.data);
+    const uint32_t packed =
+        static_cast<uint32_t>(acknowledgement.actionId - 1) |
+        (acknowledgement.eventToken << 9) |
+        (static_cast<uint32_t>(acknowledgement.outputDevice) << 26);
+    encodeUint32(packed, &frame.data[4]);
+    return true;
+}
+
 DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
     DecodeResult result{};
     if (!frame.extended) {
@@ -187,7 +262,8 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
     }
 
     result.message.type = type;
-    result.message.device = device;
+    result.message.device =
+        type == MessageType::ActionAck ? static_cast<uint8_t>(device & 0x1Fu) : device;
     switch (type) {
         case MessageType::InputState:
         case MessageType::OutputState:
@@ -217,6 +293,37 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
                 return result;
             }
             break;
+        case MessageType::ExecuteAction: {
+            const uint32_t packed = decodeUint32(&frame.data[4]);
+            ActionRequest &request = result.message.actionRequest;
+            request.generation = decodeUint32(frame.data);
+            request.actionId = static_cast<uint16_t>((packed & 0x1FFu) + 1);
+            request.eventToken = (packed >> 9) & kActionEventTokenMaximum;
+            request.sourceDevice = static_cast<uint8_t>((packed >> 26) & 0x1Fu);
+            request.targetDevice = result.message.device;
+            request.sourceValue = (packed & 0x80000000u) != 0;
+            if (request.generation == 0 || request.eventToken == 0) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        }
+        case MessageType::ActionAck: {
+            const uint32_t packed = decodeUint32(&frame.data[4]);
+            ActionAcknowledgement &acknowledgement = result.message.actionAcknowledgement;
+            acknowledgement.generation = decodeUint32(frame.data);
+            acknowledgement.actionId = static_cast<uint16_t>((packed & 0x1FFu) + 1);
+            acknowledgement.eventToken = (packed >> 9) & kActionEventTokenMaximum;
+            acknowledgement.sourceDevice = result.message.device;
+            acknowledgement.outputDevice = static_cast<uint8_t>((packed >> 26) & 0x1Fu);
+            acknowledgement.status = static_cast<ActionAckStatus>(device >> 5);
+            if (acknowledgement.generation == 0 || acknowledgement.eventToken == 0 ||
+                (packed & 0x80000000u) != 0 || !validAckStatus(acknowledgement.status)) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        }
         case MessageType::HealthCheck:
         case MessageType::Reset:
         case MessageType::ClearTriggers:

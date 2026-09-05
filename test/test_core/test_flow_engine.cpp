@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "piho/flow_engine.h"
+#include "piho/protocol.h"
 #include "piho/graph_image.h"
 
 namespace {
@@ -283,12 +284,42 @@ void test_flow_engine_rejects_mismatched_activation_and_input_masks() {
     TEST_ASSERT_EQUAL_UINT32(0, engine.pendingEventCount());
 }
 
+void test_flow_engine_wraps_tokens_within_the_wire_range() {
+    piho::LocalInputGraph graph = emptyGraph();
+    addSetAction(graph, 1);
+    addRoute(graph, 1, piho::GraphEdge::Rising, 1, 1);
+    addRoute(graph, 2, piho::GraphEdge::Falling, 1, 1);
+    piho::FlowEngine engine(1);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::FlowEngineError::None),
+        static_cast<uint8_t>(
+            engine.activate(graph, 0, piho::kActionEventTokenMaximum)));
+
+    piho::FlowActionInvocation invocation{};
+    TEST_ASSERT_TRUE(engine.submitInput(transition(0, 1, 0)));
+    TEST_ASSERT_EQUAL_UINT32(1, engine.service(0));
+    TEST_ASSERT_TRUE(engine.tryPopAction(invocation));
+    TEST_ASSERT_EQUAL_UINT32(piho::kActionEventTokenMaximum, invocation.eventToken);
+
+    TEST_ASSERT_TRUE(engine.submitInput(transition(1, 0, 1)));
+    TEST_ASSERT_EQUAL_UINT32(1, engine.service(1));
+    TEST_ASSERT_TRUE(engine.tryPopAction(invocation));
+    TEST_ASSERT_EQUAL_UINT32(1, invocation.eventToken);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::FlowEngineError::InvalidSection),
+        static_cast<uint8_t>(
+            engine.activate(graph, 0, piho::kActionEventTokenMaximum + 1)));
+}
+
+
 }  // namespace
 
 void runFlowEngineTests() {
     RUN_TEST(test_flow_engine_runs_shared_graph_without_synthetic_activation_edge);
     RUN_TEST(test_flow_engine_combines_matching_routes_under_one_event_token);
     RUN_TEST(test_flow_engine_limits_each_service_call_without_losing_fanout);
+    RUN_TEST(test_flow_engine_wraps_tokens_within_the_wire_range);
     RUN_TEST(test_flow_engine_reports_pending_and_delayed_capacity_exhaustion);
     RUN_TEST(test_flow_engine_backpressures_without_dropping_an_accepted_action);
     RUN_TEST(test_flow_engine_rejects_mismatched_activation_and_input_masks);

@@ -185,6 +185,22 @@ GraphImageError verifyManifest(const GraphImageSource &source, const GraphManife
 
 }  // namespace
 
+bool isGraphActionValid(const GraphActionRecord &action) {
+    if (action.id == 0 || action.id > kGraphActionCapacity ||
+        action.targetDevice >= kGraphDeviceCapacity || action.targetPin >= kPinsPerDevice ||
+        !isOperationValid(action.operation) || action.delayMs > kGraphMaximumActionTimeMs) {
+        return false;
+    }
+    if (action.operation == GraphOperation::Pulse) {
+        return !action.value && action.durationMs != 0 &&
+               action.durationMs <= kGraphMaximumActionTimeMs;
+    }
+    if (action.durationMs != 0) {
+        return false;
+    }
+    return action.operation == GraphOperation::Set || !action.value;
+}
+
 bool GraphImageSource::readAt(std::size_t offset, uint8_t *output, std::size_t length) const {
     if (read == nullptr || (length != 0 && output == nullptr) || offset > size || length > size - offset) {
         return false;
@@ -449,20 +465,10 @@ GraphImageError GraphImageCodec::validate(const GraphImageSource &source, GraphM
                               action, encodedValue, reserved)) {
             return GraphImageError::ReadFailure;
         }
-        if (reserved != 0 || action.id == 0 || action.id > candidate.actionCount ||
-            action.targetDevice >= kGraphDeviceCapacity ||
+        if (reserved != 0 || action.id > candidate.actionCount ||
+            !isGraphActionValid(action) ||
             deviceRoles[action.targetDevice] != static_cast<uint8_t>(GraphDeviceRole::Output) ||
-            action.targetPin >= kPinsPerDevice || !isOperationValid(action.operation) ||
-            action.delayMs > kGraphMaximumActionTimeMs) {
-            return GraphImageError::InvalidAction;
-        }
-        const bool invalidParameters =
-            (action.operation == GraphOperation::Set && encodedValue > 1) ||
-            (action.operation != GraphOperation::Set && encodedValue != 0) ||
-            (action.operation == GraphOperation::Pulse &&
-             (action.durationMs == 0 || action.durationMs > kGraphMaximumActionTimeMs)) ||
-            (action.operation != GraphOperation::Pulse && action.durationMs != 0);
-        if (invalidParameters) {
+            (action.operation == GraphOperation::Set && encodedValue > 1)) {
             return GraphImageError::InvalidAction;
         }
         if (actionPresent[action.id]) {

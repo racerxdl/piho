@@ -160,6 +160,23 @@ bool PihoController::clearTriggers(uint8_t outputDevice) {
     return piho::ProtocolCodec::clearTriggers(outputDevice, frame) && send(frame);
 }
 
+bool PihoController::executeAction(const piho::ActionRequest &request) {
+    if (request.sourceDevice != deviceId_) {
+        return false;
+    }
+    piho::CanFrame frame{};
+    return piho::ProtocolCodec::executeAction(request, frame) && send(frame);
+}
+
+bool PihoController::acknowledgeAction(
+    const piho::ActionAcknowledgement &acknowledgement) {
+    if (acknowledgement.outputDevice != deviceId_) {
+        return false;
+    }
+    piho::CanFrame frame{};
+    return piho::ProtocolCodec::actionAcknowledgement(acknowledgement, frame) && send(frame);
+}
+
 bool PihoController::send(const piho::CanFrame &frame) {
     if (started_ && transport_.trySend(frame)) {
         return true;
@@ -241,6 +258,21 @@ void PihoController::handle(const piho::CanFrame &frame) {
                 reportError(ControllerError::UnsupportedCommand);
             } else if (!callbacks_.onClearTriggers(callbacks_.context)) {
                 reportError(ControllerError::Application);
+            }
+            break;
+        case piho::MessageType::ExecuteAction:
+            if (callbacks_.onExecuteAction == nullptr) {
+                reportError(ControllerError::UnsupportedCommand);
+            } else {
+                callbacks_.onExecuteAction(callbacks_.context, message.actionRequest);
+            }
+            break;
+        case piho::MessageType::ActionAck:
+            if (callbacks_.onActionAcknowledgement == nullptr) {
+                reportError(ControllerError::UnsupportedCommand);
+            } else {
+                callbacks_.onActionAcknowledgement(callbacks_.context,
+                                                   message.actionAcknowledgement);
             }
             break;
         case piho::MessageType::InputState:

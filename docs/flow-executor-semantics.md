@@ -88,17 +88,20 @@ Delayed invocations are volatile across board reset. Format 1 does not write tim
 
 ## Delivery and acknowledgement
 
-An input/executor board keeps at most 32 action invocations awaiting application acknowledgement. A request has one immutable event token across all retries.
+An input/executor board keeps at most 32 action invocations awaiting application acknowledgement. A request has one immutable event token across all retries. Event tokens are nonzero 17-bit values (`1..131071`) and wrap to 1; bounded CAN throughput makes the wrap interval longer than the output deduplication window. The request preserves the full 32-bit graph generation.
+
+`ExecuteAction` and `ActionAck` each use one classic-CAN frame with an eight-byte payload. The target or acknowledgement destination is in the extended identifier. The payload carries the generation and a packed action ID, event token, source or output device, and source value. Message types 10 and 11 are reserved for these runtime frames; graph-transfer types begin at 16, so runtime actions win CAN arbitration when their common protocol header is equal.
 
 - CAN transmission success alone does not prove that the output was changed.
-- The target returns `executed`, `already_executed`, or a rejection reason.
-- Timeouts retry with the same event token.
-- Retry count and timeout are fixed firmware capabilities reported to the host, not graph-controlled unbounded values.
-- Exhausted retries produce an error event and counter without blocking later input processing.
+- The target returns `executed`, `already_executed`, `wrong_generation`, `unknown_action`, `wrong_target`, `invalid_action`, or `unavailable_output`.
+- The sender makes at most three attempts, 100 milliseconds apart, with the same event token.
+- A pending invocation expires after 300 milliseconds; a stalled board never transmits an old retry after the output deduplication window.
+- An `unavailable_output` response is retryable within that lifetime; other rejection statuses are terminal.
+- Exhausted or expired retries produce an error counter without blocking later input processing.
 
-An output board keeps a bounded recent-event cache sufficient for the retry window. Duplicate `toggle` and `pulse` requests return `already_executed` without applying the operation again.
+An output board retains up to 64 executed action keys for 1000 milliseconds, longer than the complete retry window. The key is graph generation, source device, event token, and action ID. Duplicate `set`, `copy_source`, `toggle`, and `pulse` requests return `already_executed` without applying the operation again. If every deduplication slot is still live, the board returns `unavailable_output` before touching GPIO rather than risk repeating a non-idempotent action.
 
-An action request from another graph generation, with an unknown action ID, or with a target that does not match the receiving board is rejected without touching GPIO.
+An action request from another graph generation, with an unknown action ID, or with a target that does not match the receiving board is rejected without touching GPIO. Retry, acknowledgement timeout, rejection, exhaustion, deduplication, and capacity failures have saturating status counters.
 
 ## Graph activation
 
@@ -141,6 +144,9 @@ These are protocol and runtime limits, not dynamically allocated targets:
 | Actions emitted by one source event | 16 |
 | Delayed invocations per executor | 32 |
 | Unacknowledged invocations per executor | 32 |
+| Recent executed-action keys per output | 64 |
+| Event token | 1..131071 |
+| Action attempts | 3 at 100 ms intervals |
 | Pulse timers per output board | 16 |
 | Debounce interval | 0..5000 ms |
 | Action delay or pulse duration | 0..86400000 ms |

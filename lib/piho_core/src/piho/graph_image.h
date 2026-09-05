@@ -121,6 +121,8 @@ struct GraphActionRecord {
     uint32_t durationMs = 0;
 };
 
+bool isGraphActionValid(const GraphActionRecord &action);
+
 struct GraphManifest {
     uint16_t format = 0;
     uint16_t executorApi = 0;
@@ -179,8 +181,8 @@ struct LocalInputGraph {
 struct LocalOutputGraph {
     GraphIdentity identity{};
     uint8_t device = 0;
-    uint16_t actionCount = 0;
     GraphDeviceRole role = GraphDeviceRole::Output;
+    uint16_t actionCount = 0;
     GraphActionRecord actions[kGraphLocalActionCapacity]{};
     uint16_t actionSlotById[kGraphActionCapacity + 1]{};
 

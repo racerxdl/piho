@@ -42,7 +42,8 @@ FlowEngineError FlowEngine::activate(const LocalInputGraph &graph, uint16_t curr
     if (graph.role != GraphDeviceRole::Input) {
         return FlowEngineError::RoleMismatch;
     }
-    if (eventTokenSeed == 0 || graph.inputCount > kGraphLocalInputCapacity ||
+    if (eventTokenSeed == 0 || eventTokenSeed > kActionEventTokenMaximum ||
+        graph.inputCount > kGraphLocalInputCapacity ||
         graph.routeCount > kGraphLocalRouteCapacity ||
         graph.actionReferenceCount > kGraphLocalActionReferenceCapacity ||
         graph.referencedActionCount > kGraphActionCapacity) {
@@ -64,21 +65,7 @@ FlowEngineError FlowEngine::activate(const LocalInputGraph &graph, uint16_t curr
     bool referencedActionIds[kGraphActionCapacity + 1]{};
     for (uint16_t index = 0; index < graph.referencedActionCount; ++index) {
         const GraphActionRecord &action = graph.referencedActions[index];
-        const bool validOperation =
-            action.operation == GraphOperation::Set || action.operation == GraphOperation::CopySource ||
-            action.operation == GraphOperation::Toggle || action.operation == GraphOperation::Pulse;
-        const bool validParameters =
-            (action.operation == GraphOperation::Pulse &&
-             action.durationMs != 0 && action.durationMs <= kGraphMaximumActionTimeMs &&
-             !action.value) ||
-            (action.operation == GraphOperation::Set && action.durationMs == 0) ||
-            ((action.operation == GraphOperation::CopySource ||
-              action.operation == GraphOperation::Toggle) &&
-             action.durationMs == 0 && !action.value);
-        if (action.id == 0 || action.id > kGraphActionCapacity ||
-            action.targetDevice >= kGraphDeviceCapacity || action.targetPin >= kPinsPerDevice ||
-            !validOperation || !validParameters || action.delayMs > kGraphMaximumActionTimeMs ||
-            graph.findAction(action.id) != &action) {
+        if (!isGraphActionValid(action) || graph.findAction(action.id) != &action) {
             return FlowEngineError::InvalidSection;
         }
     }
@@ -207,7 +194,7 @@ void FlowEngine::resetRuntime(uint16_t currentInputs, uint32_t eventTokenSeed) {
 
 uint32_t FlowEngine::allocateEventToken() {
     const uint32_t token = nextEventToken_++;
-    if (nextEventToken_ == 0) {
+    if (nextEventToken_ > kActionEventTokenMaximum) {
         nextEventToken_ = 1;
     }
     return token;

@@ -23,6 +23,9 @@ struct PihoCallbacks {
     bool (*onUpsertTrigger)(void *context, const piho::TriggerRule &rule) = nullptr;
     bool (*onRemoveTrigger)(void *context, const piho::TriggerRule &rule) = nullptr;
     bool (*onClearTriggers)(void *context) = nullptr;
+    void (*onExecuteAction)(void *context, const piho::ActionRequest &request) = nullptr;
+    void (*onActionAcknowledgement)(
+        void *context, const piho::ActionAcknowledgement &acknowledgement) = nullptr;
     void (*onError)(void *context, ControllerError error) = nullptr;
 };
 
@@ -43,6 +46,8 @@ class PihoController {
     bool upsertTrigger(uint8_t outputDevice, const piho::TriggerRule &rule);
     bool removeTrigger(uint8_t outputDevice, const piho::TriggerRule &rule);
     bool clearTriggers(uint8_t outputDevice);
+    bool executeAction(const piho::ActionRequest &request);
+    bool acknowledgeAction(const piho::ActionAcknowledgement &acknowledgement);
 
     uint8_t deviceId() const { return deviceId_; }
     CanTransportStats transportStats() const { return transport_.stats(); }

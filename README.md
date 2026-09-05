@@ -64,10 +64,10 @@ See [`docs/flow-executor-semantics.md`](docs/flow-executor-semantics.md) for run
 Piho accepts only 29-bit extended data frames in its namespace:
 
 ```text
-(0x150 << 20) | (version << 16) | (message_type << 8) | device
+(0x150 << 20) | (version << 16) | (message_type << 8) | address
 ```
 
-Version is `1`. Physical device IDs are `0..31`; `0xFF` is accepted only for health-check and reset broadcasts. Every message has an exact payload length:
+Version is `1`. Except for acknowledgements, the address is a physical device ID (`0..31`); `0xFF` means broadcast only for health-check and reset. For `ActionAck`, the low five address bits select the source board and the high three bits carry the acknowledgement status. Every message has an exact payload length:
 
 | Type | Payload |
 | --- | --- |
@@ -79,6 +79,8 @@ Version is `1`. Physical device IDs are `0..31`; `0xFF` is accepted only for hea
 | Set byte | local byte, value |
 | Upsert/remove trigger | input device, input pin, local output pin |
 | Clear triggers | empty |
+| Execute action | 32-bit generation plus packed action ID, event token, source device, and source value |
+| Action acknowledgement | 32-bit generation plus packed action ID, event token, and output device; status is in the identifier |
 
 Frames with another namespace, remote-frame flag, unsupported type, invalid device, incorrect length, or invalid payload are rejected before dispatch.
 

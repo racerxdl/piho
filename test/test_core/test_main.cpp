@@ -13,6 +13,7 @@
 
 void runGraphImageTests();
 void runFlowEngineTests();
+void runActionRuntimeTests();
 
 namespace {
 
@@ -405,5 +406,6 @@ int main() {
     RUN_TEST(test_controller_dispatches_only_valid_addressed_frames);
     runGraphImageTests();
     runFlowEngineTests();
+    runActionRuntimeTests();
     return UNITY_END();
 }

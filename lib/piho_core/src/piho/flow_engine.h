@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "piho/graph_image.h"
+#include "piho/protocol.h"
 
 namespace piho {
 
@@ -51,7 +52,8 @@ class FlowEngine {
     explicit FlowEngine(uint8_t device) : device_(device) {}
 
     // The active graph must remain immutable and alive until deactivation or replacement.
-    // Activation is transactional: failure leaves the previous graph and runtime state intact.
+    // eventTokenSeed must be in 1..kActionEventTokenMaximum. Activation is transactional:
+    // failure leaves the previous graph and runtime state intact.
     FlowEngineError activate(const LocalInputGraph &graph, uint16_t currentInputs,
                              uint32_t eventTokenSeed);
     void deactivate();
