@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Piho flow graph source, format 1",
+  "description": "Human-editable source for executor API 1. Runtime images exclude all symbolic names.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "executorApi", "generation", "devices", "inputs", "actions", "flows"],
+  "properties": {
+    "format": { "const": 1 },
+    "executorApi": { "const": 1 },
+    "generation": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "devices": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/device" }
+    },
+    "inputs": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/input" }
+    },
+    "actions": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/action" }
+    },
+    "flows": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/flow" }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "deviceName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "pin": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "delayMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "role": { "enum": ["input", "output"] }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "pin", "debounceMs"],
+      "properties": {
+        "device": { "$ref": "#/$defs/deviceName" },
+        "pin": { "$ref": "#/$defs/pin" },
+        "debounceMs": { "type": "integer", "minimum": 0, "maximum": 5000 }
+      }
+    },
+    "setAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "pin", "operation", "value"],
+      "properties": {
+        "device": { "$ref": "#/$defs/deviceName" },
+        "pin": { "$ref": "#/$defs/pin" },
+        "operation": { "const": "set" },
+        "value": { "type": "boolean" },
+        "delayMs": { "$ref": "#/$defs/delayMs" }
+      }
+    },
+    "copyOrToggleAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "pin", "operation"],
+      "properties": {
+        "device": { "$ref": "#/$defs/deviceName" },
+        "pin": { "$ref": "#/$defs/pin" },
+        "operation": { "enum": ["copy_source", "toggle"] },
+        "delayMs": { "$ref": "#/$defs/delayMs" }
+      }
+    },
+    "pulseAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "pin", "operation", "durationMs"],
+      "properties": {
+        "device": { "$ref": "#/$defs/deviceName" },
+        "pin": { "$ref": "#/$defs/pin" },
+        "operation": { "const": "pulse" },
+        "delayMs": { "$ref": "#/$defs/delayMs" },
+        "durationMs": { "type": "integer", "minimum": 1, "maximum": 86400000 }
+      }
+    },
+    "action": {
+      "oneOf": [
+        { "$ref": "#/$defs/setAction" },
+        { "$ref": "#/$defs/copyOrToggleAction" },
+        { "$ref": "#/$defs/pulseAction" }
+      ]
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "edge"],
+      "properties": {
+        "input": { "$ref": "#/$defs/deviceName" },
+        "edge": { "enum": ["rising", "falling", "changed"] }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "actions"],
+      "properties": {
+        "when": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/trigger" }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/deviceName" }
+        }
+      }
+    }
+  }
+}

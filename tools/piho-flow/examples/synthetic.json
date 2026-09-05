@@ -1,0 +1,79 @@
+{
+  "format": 1,
+  "executorApi": 1,
+  "generation": 1,
+  "devices": {
+    "entry_inputs": {
+      "id": 1,
+      "role": "input"
+    },
+    "upper_inputs": {
+      "id": 2,
+      "role": "input"
+    },
+    "utility_relays": {
+      "id": 7,
+      "role": "output"
+    },
+    "garden_relays": {
+      "id": 8,
+      "role": "output"
+    }
+  },
+  "inputs": {
+    "entry_button": {
+      "device": "entry_inputs",
+      "pin": 2,
+      "debounceMs": 25
+    },
+    "upper_switch": {
+      "device": "upper_inputs",
+      "pin": 5,
+      "debounceMs": 40
+    }
+  },
+  "actions": {
+    "toggle_utility_light": {
+      "device": "utility_relays",
+      "pin": 3,
+      "operation": "toggle"
+    },
+    "delayed_garden_light": {
+      "device": "garden_relays",
+      "pin": 4,
+      "operation": "set",
+      "value": true,
+      "delayMs": 60000
+    },
+    "mirror_upper_switch": {
+      "device": "utility_relays",
+      "pin": 6,
+      "operation": "copy_source"
+    }
+  },
+  "flows": {
+    "entry_lighting": {
+      "when": [
+        {
+          "input": "entry_button",
+          "edge": "rising"
+        }
+      ],
+      "actions": [
+        "toggle_utility_light",
+        "delayed_garden_light"
+      ]
+    },
+    "upper_lighting": {
+      "when": [
+        {
+          "input": "upper_switch",
+          "edge": "changed"
+        }
+      ],
+      "actions": [
+        "mirror_upper_switch"
+      ]
+    }
+  }
+}

@@ -43,6 +43,22 @@ Firmware images are written to:
 - `.pio/build/input_device/firmware.uf2`
 - `.pio/build/output_device/firmware.uf2`
 
+## Flow graph compiler
+
+The Bun/TypeScript CLI in [`tools/piho-flow`](tools/piho-flow) validates strict JSON flow sources and produces deterministic, CRC-protected `.phg` graph images without connecting to hardware:
+
+```sh
+cd tools/piho-flow
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run flow validate examples/synthetic.json
+bun run flow compile examples/synthetic.json --output /tmp/synthetic.phg
+bun run flow inspect /tmp/synthetic.phg
+```
+
+See [`docs/flow-executor-semantics.md`](docs/flow-executor-semantics.md) for runtime behavior and [`docs/flow-image-format.md`](docs/flow-image-format.md) for the authoring schema, canonical ID assignment, and binary record layout.
+
 ## CAN protocol
 
 Piho accepts only 29-bit extended data frames in its namespace:
