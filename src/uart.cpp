@@ -51,8 +51,6 @@ ErrorEvent_Code errorCode(DeviceErrorCode code) {
             return ErrorEvent_Code_TRANSPORT;
         case DeviceErrorCode::Storage:
             return ErrorEvent_Code_STORAGE;
-        case DeviceErrorCode::TriggerTableFull:
-            return ErrorEvent_Code_TRIGGER_TABLE_FULL;
         case DeviceErrorCode::GraphUpdate:
             return ErrorEvent_Code_GRAPH_UPDATE;
     }
@@ -69,12 +67,6 @@ AckEvent_Operation operationCode(DeviceOperation operation) {
             return AckEvent_Operation_SET_BYTE;
         case DeviceOperation::Reset:
             return AckEvent_Operation_RESET;
-        case DeviceOperation::UpsertTrigger:
-            return AckEvent_Operation_UPSERT_TRIGGER;
-        case DeviceOperation::RemoveTrigger:
-            return AckEvent_Operation_REMOVE_TRIGGER;
-        case DeviceOperation::ClearTriggers:
-            return AckEvent_Operation_CLEAR_TRIGGERS;
         case DeviceOperation::GraphBegin:
             return AckEvent_Operation_GRAPH_BEGIN;
         case DeviceOperation::GraphChunk:
@@ -93,11 +85,6 @@ AckEvent_Operation operationCode(DeviceOperation operation) {
     return AckEvent_Operation_NONE;
 }
 
-bool validTriggerCommand(const TriggerCommand &command) {
-    return command.input_device < piho::kDeviceCount && command.input_pin < piho::kPinsPerDevice &&
-           command.output_device < piho::kDeviceCount && command.output_pin < piho::kPinsPerDevice;
-}
-
 void reportGraphResult(DeviceOperation operation, piho::GraphUpdateError result,
                        const piho::GraphUpdateCoordinator &graphUpdate) {
     const bool accepted = result == piho::GraphUpdateError::None;
@@ -114,6 +101,8 @@ void reportGraphResult(DeviceOperation operation, piho::GraphUpdateError result,
 
 void processCommand(PihoController &controller,
                     piho::GraphUpdateCoordinator &graphUpdate,
+                    const piho::GraphNodeUpdateStatus &nodeUpdate,
+                    const piho::GraphRuntimeStatus &runtime,
                     const uint8_t *payload, uint16_t payloadLength) {
     HostCommand command = HostCommand_init_zero;
     pb_istream_t stream = pb_istream_from_buffer(payload, payloadLength);
@@ -158,35 +147,8 @@ void processCommand(PihoController &controller,
             return;
         }
         case HostCommand_status_tag:
-            sendStatusEvent(controller);
+            sendStatusEvent(controller, nodeUpdate, runtime);
             return;
-        case HostCommand_upsert_trigger_tag:
-        case HostCommand_remove_trigger_tag: {
-            const bool upsert = command.which_command == HostCommand_upsert_trigger_tag;
-            const TriggerCommand &request =
-                upsert ? command.command.upsert_trigger : command.command.remove_trigger;
-            if (!validTriggerCommand(request)) {
-                sendErrorEvent(DeviceErrorCode::OutOfRange);
-                return;
-            }
-            const piho::TriggerRule rule{static_cast<uint8_t>(request.input_device),
-                                         static_cast<uint8_t>(request.input_pin),
-                                         static_cast<uint8_t>(request.output_pin)};
-            const bool accepted =
-                upsert ? controller.upsertTrigger(static_cast<uint8_t>(request.output_device), rule)
-                       : controller.removeTrigger(static_cast<uint8_t>(request.output_device), rule);
-            sendAckEvent(upsert ? DeviceOperation::UpsertTrigger : DeviceOperation::RemoveTrigger, accepted);
-            return;
-        }
-        case HostCommand_clear_triggers_tag: {
-            const uint32_t device = command.command.clear_triggers.device;
-            if (device >= piho::kDeviceCount) {
-                sendErrorEvent(DeviceErrorCode::OutOfRange);
-                return;
-            }
-            sendAckEvent(DeviceOperation::ClearTriggers, controller.clearTriggers(static_cast<uint8_t>(device)));
-            return;
-        }
         case HostCommand_graph_begin_tag: {
             const GraphBeginCommand &request = command.command.graph_begin;
             piho::GraphUpdateError result = piho::GraphUpdateError::InvalidDescriptor;
@@ -269,7 +231,9 @@ void processCommand(PihoController &controller,
 }  // namespace
 
 void handleUART(PihoController &controller,
-                piho::GraphUpdateCoordinator &graphUpdate) {
+                piho::GraphUpdateCoordinator &graphUpdate,
+                const piho::GraphNodeUpdateStatus &nodeUpdate,
+                const piho::GraphRuntimeStatus &runtime) {
     for (std::size_t processed = 0; processed < MAX_UART_BYTES_PER_POLL && Serial.available() > 0; ++processed) {
         const int value = Serial.read();
         if (value < 0) {
@@ -279,7 +243,8 @@ void handleUART(PihoController &controller,
         piho::SerialFrameView frame{};
         const piho::FrameParseStatus status = parser.push(static_cast<uint8_t>(value), frame);
         if (status == piho::FrameParseStatus::Complete) {
-            processCommand(controller, graphUpdate, frame.data, frame.length);
+            processCommand(controller, graphUpdate, nodeUpdate, runtime,
+                           frame.data, frame.length);
         } else if (status != piho::FrameParseStatus::None) {
             sendErrorEvent(DeviceErrorCode::InvalidFrame);
         }
@@ -294,26 +259,39 @@ void sendInputStateEvent(uint8_t device, uint16_t state) {
     sendDeviceEvent(event);
 }
 
-void sendStatusEvent(const PihoController &controller) {
+void sendStatusEvent(const PihoController &controller,
+                     const piho::GraphNodeUpdateStatus &nodeUpdate,
+                     const piho::GraphRuntimeStatus &runtime) {
     const CanTransportStats stats = controller.transportStats();
+    const piho::GraphStoreStatus &stored = graphStore.status();
     DeviceEvent event = DeviceEvent_init_zero;
     event.which_event = DeviceEvent_status_tag;
-    event.event.status.device = controller.deviceId();
+    StatusEvent &status = event.event.status;
+    status.device = controller.deviceId();
 #ifdef IS_INPUT_DEVICE
-    event.event.status.input_device = true;
-    event.event.status.gpio_state = inputState();
-    event.event.status.trigger_count = 0;
+    status.input_device = true;
+    status.gpio_state = inputState();
 #else
-    event.event.status.input_device = false;
-    event.event.status.gpio_state = outputState();
-    event.event.status.trigger_count = triggerRules.size();
+    status.input_device = false;
+    status.gpio_state = outputState();
 #endif
-    event.event.status.rx_dropped = stats.rxDropped;
-    event.event.status.tx_dropped = stats.txDropped;
-    event.event.status.bus_errors = stats.busErrors;
+    status.rx_dropped = stats.rxDropped;
+    status.tx_dropped = stats.txDropped;
+    status.bus_errors = stats.busErrors;
+    status.graph_generation = runtime.identity.generation;
+    status.graph_checksum = runtime.identity.checksum;
+    status.update_state =
+        static_cast<::GraphUpdateState>(nodeUpdate.state);
+    status.store_state = static_cast<::GraphStoreState>(stored.state);
+    status.store_error = static_cast<::GraphStoreError>(stored.lastError);
+    status.flow_accepted_events = runtime.flowAcceptedEvents;
+    status.flow_evaluated_actions = runtime.flowEvaluatedActions;
+    status.action_retries = runtime.actionRetries;
+    status.action_rejections = runtime.actionRejections;
+    status.executor_executed_actions = runtime.executorExecutedActions;
+    status.executor_rejected_actions = runtime.executorRejectedActions;
     sendDeviceEvent(event);
 }
-
 
 void sendGraphUpdateEvent(const piho::GraphGatewayStatus &status) {
     DeviceEvent event = DeviceEvent_init_zero;
@@ -398,11 +376,41 @@ void sendGraphNodeStatusEvent(const piho::ProtocolMessage &message) {
                 GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_TRANSPORT_ERRORS;
             status.bus_errors = message.graphNode.busErrors;
             break;
+        case piho::MessageType::GraphRuntimeIdentity:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_RUNTIME_IDENTITY;
+            status.runtime_generation =
+                message.graphNode.identity.generation;
+            status.runtime_checksum = message.graphNode.identity.checksum;
+            break;
+        case piho::MessageType::GraphFlowCounters:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_FLOW_COUNTERS;
+            status.flow_accepted_events =
+                message.graphNode.flowAcceptedEvents;
+            status.flow_evaluated_actions =
+                message.graphNode.flowEvaluatedActions;
+            break;
+        case piho::MessageType::GraphActionCounters:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_ACTION_COUNTERS;
+            status.action_retries = message.graphNode.actionRetries;
+            status.action_rejections = message.graphNode.actionRejections;
+            break;
+        case piho::MessageType::GraphExecutorCounters:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_EXECUTOR_COUNTERS;
+            status.executor_executed_actions =
+                message.graphNode.executorExecutedActions;
+            status.executor_rejected_actions =
+                message.graphNode.executorRejectedActions;
+            break;
         default:
             return;
     }
     sendDeviceEvent(event);
 }
+
 void sendErrorEvent(DeviceErrorCode code) {
     DeviceEvent event = DeviceEvent_init_zero;
     event.which_event = DeviceEvent_error_tag;

@@ -5,13 +5,12 @@
 
 #include "piho/can_frame.h"
 #include "piho/graph_image.h"
-#include "piho/trigger_table.h"
 
 namespace piho {
 
 constexpr uint8_t kBroadcastDevice = 0xFF;
 constexpr uint16_t kProtocolNamespace = 0x150;
-constexpr uint8_t kProtocolVersion = 1;
+constexpr uint8_t kProtocolVersion = 2;
 constexpr uint32_t kProtocolHeader = (static_cast<uint32_t>(kProtocolNamespace) << 20) |
                                      (static_cast<uint32_t>(kProtocolVersion) << 16);
 constexpr uint32_t kProtocolHeaderMask = 0x1FFF0000u;
@@ -29,9 +28,6 @@ enum class MessageType : uint8_t {
     OutputState = 4,
     SetPin = 5,
     SetByte = 6,
-    UpsertTrigger = 7,
-    RemoveTrigger = 8,
-    ClearTriggers = 9,
     ExecuteAction = 10,
     ActionAck = 11,
     GraphBegin = 16,
@@ -55,6 +51,10 @@ enum class MessageType : uint8_t {
     GraphRollbackManifest = 34,
     GraphTransportDrops = 35,
     GraphTransportErrors = 36,
+    GraphRuntimeIdentity = 37,
+    GraphFlowCounters = 38,
+    GraphActionCounters = 39,
+    GraphExecutorCounters = 40,
 };
 
 static_assert(static_cast<uint8_t>(MessageType::ExecuteAction) <
@@ -110,6 +110,7 @@ enum class GraphUpdateError : uint8_t {
     Aborted = 13,
     WrongRole = 14,
     Incompatible = 15,
+    Runtime = 16,
 };
 
 struct GraphTransferDescriptor {
@@ -149,6 +150,12 @@ struct GraphNodeStatusMessage {
     uint32_t rxDropped = 0;
     uint32_t txDropped = 0;
     uint32_t busErrors = 0;
+    uint32_t flowAcceptedEvents = 0;
+    uint32_t flowEvaluatedActions = 0;
+    uint32_t actionRetries = 0;
+    uint32_t actionRejections = 0;
+    uint32_t executorExecutedActions = 0;
+    uint32_t executorRejectedActions = 0;
     uint8_t storeError = 0;
 };
 
@@ -176,7 +183,6 @@ struct ProtocolMessage {
     uint16_t state = 0;
     uint8_t index = 0;
     uint8_t value = 0;
-    TriggerRule trigger{};
     ActionRequest actionRequest{};
     ActionAcknowledgement actionAcknowledgement{};
     GraphTransferMessage graph{};
@@ -198,9 +204,6 @@ class ProtocolCodec {
     static bool outputState(uint8_t targetDevice, uint16_t state, CanFrame &frame);
     static bool setPin(uint8_t targetDevice, uint8_t localPin, bool value, CanFrame &frame);
     static bool setByte(uint8_t targetDevice, uint8_t localByte, uint8_t value, CanFrame &frame);
-    static bool upsertTrigger(uint8_t targetDevice, const TriggerRule &rule, CanFrame &frame);
-    static bool removeTrigger(uint8_t targetDevice, const TriggerRule &rule, CanFrame &frame);
-    static bool clearTriggers(uint8_t targetDevice, CanFrame &frame);
     static bool executeAction(const ActionRequest &request, CanFrame &frame);
     static bool actionAcknowledgement(const ActionAcknowledgement &acknowledgement,
                                       CanFrame &frame);
@@ -241,6 +244,18 @@ class ProtocolCodec {
                                     uint32_t txDropped, CanFrame &frame);
     static bool graphTransportErrors(uint8_t sourceDevice, uint32_t busErrors,
                                      CanFrame &frame);
+    static bool graphRuntimeIdentity(uint8_t sourceDevice,
+                                     const GraphIdentity &identity,
+                                     CanFrame &frame);
+    static bool graphFlowCounters(uint8_t sourceDevice,
+                                  uint32_t acceptedEvents,
+                                  uint32_t evaluatedActions, CanFrame &frame);
+    static bool graphActionCounters(uint8_t sourceDevice, uint32_t retries,
+                                    uint32_t rejections, CanFrame &frame);
+    static bool graphExecutorCounters(uint8_t sourceDevice,
+                                      uint32_t executedActions,
+                                      uint32_t rejectedActions,
+                                      CanFrame &frame);
 
     static DecodeResult decode(const CanFrame &frame);
 

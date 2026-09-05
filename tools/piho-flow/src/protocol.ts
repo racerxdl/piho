@@ -29,6 +29,7 @@ export enum GraphUpdateError {
   Aborted = 13,
   WrongRole = 14,
   Incompatible = 15,
+  Runtime = 16,
 }
 
 export enum GraphStoreState {
@@ -72,6 +73,10 @@ export enum GraphNodeStatusPart {
   RollbackManifest = 7,
   TransportDrops = 8,
   TransportErrors = 9,
+  RuntimeIdentity = 10,
+  FlowCounters = 11,
+  ActionCounters = 12,
+  ExecutorCounters = 13,
 }
 
 export enum AckOperation {
@@ -155,6 +160,14 @@ export interface GraphNodeStatusDeviceEvent {
   readonly activeDevices: number;
   readonly stagedDevices: number;
   readonly rollbackDevices: number;
+  readonly runtimeGeneration: number;
+  readonly runtimeChecksum: number;
+  readonly flowAcceptedEvents: number;
+  readonly flowEvaluatedActions: number;
+  readonly actionRetries: number;
+  readonly actionRejections: number;
+  readonly executorExecutedActions: number;
+  readonly executorRejectedActions: number;
 }
 
 export type DeviceEvent =
@@ -388,7 +401,7 @@ function role(code: number): DeviceRole | null {
 }
 
 function decodeGraphNodeStatus(bytes: Uint8Array): GraphNodeStatusDeviceEvent {
-  const fields = decodeVarintMessage(bytes, 18);
+  const fields = decodeVarintMessage(bytes, 26);
   return {
     kind: "graphNodeStatus",
     device: value(fields, 1),
@@ -409,6 +422,14 @@ function decodeGraphNodeStatus(bytes: Uint8Array): GraphNodeStatusDeviceEvent {
     rxDropped: value(fields, 16),
     txDropped: value(fields, 17),
     busErrors: value(fields, 18),
+    runtimeGeneration: value(fields, 19),
+    runtimeChecksum: value(fields, 20),
+    flowAcceptedEvents: value(fields, 21),
+    flowEvaluatedActions: value(fields, 22),
+    actionRetries: value(fields, 23),
+    actionRejections: value(fields, 24),
+    executorExecutedActions: value(fields, 25),
+    executorRejectedActions: value(fields, 26),
   };
 }
 
@@ -488,6 +509,14 @@ function encodeGraphNodeStatus(event: GraphNodeStatusDeviceEvent): Uint8Array {
     varintField(16, event.rxDropped),
     varintField(17, event.txDropped),
     varintField(18, event.busErrors),
+    varintField(19, event.runtimeGeneration),
+    varintField(20, event.runtimeChecksum),
+    varintField(21, event.flowAcceptedEvents),
+    varintField(22, event.flowEvaluatedActions),
+    varintField(23, event.actionRetries),
+    varintField(24, event.actionRejections),
+    varintField(25, event.executorExecutedActions),
+    varintField(26, event.executorRejectedActions),
   ]);
 }
 

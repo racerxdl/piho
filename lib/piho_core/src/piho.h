@@ -20,9 +20,6 @@ struct PihoCallbacks {
     void (*onOutputState)(void *context, uint16_t state) = nullptr;
     void (*onSetPin)(void *context, uint8_t localPin, bool value) = nullptr;
     void (*onSetByte)(void *context, uint8_t localByte, uint8_t value) = nullptr;
-    bool (*onUpsertTrigger)(void *context, const piho::TriggerRule &rule) = nullptr;
-    bool (*onRemoveTrigger)(void *context, const piho::TriggerRule &rule) = nullptr;
-    bool (*onClearTriggers)(void *context) = nullptr;
     void (*onExecuteAction)(void *context, const piho::ActionRequest &request) = nullptr;
     void (*onActionAcknowledgement)(
         void *context, const piho::ActionAcknowledgement &acknowledgement) = nullptr;
@@ -44,9 +41,7 @@ class PihoController {
     bool setGlobalByte(uint16_t globalByte, uint8_t value);
     bool broadcastHealthCheck();
     bool requestReset(uint8_t device, bool broadcast);
-    bool upsertTrigger(uint8_t outputDevice, const piho::TriggerRule &rule);
-    bool removeTrigger(uint8_t outputDevice, const piho::TriggerRule &rule);
-    bool clearTriggers(uint8_t outputDevice);
+    bool sendActionFrame(const piho::CanFrame &frame);
     bool executeAction(const piho::ActionRequest &request);
     bool acknowledgeAction(const piho::ActionAcknowledgement &acknowledgement);
     bool sendGraphUpdateFrame(const piho::CanFrame &frame);

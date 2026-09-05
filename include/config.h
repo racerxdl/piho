@@ -17,7 +17,6 @@
 #define ADDR_BIT_3 27u
 #define ADDR_BIT_4 28u
 
-#define DEBOUNCE_TIME_MS 500u
 #define IO_CHECK_INTERVAL_MS 5u
 #define PIHO_QUEUE_MAX_ITEMS 32u
 #define HC_LED_TIMEOUT_MS 50u

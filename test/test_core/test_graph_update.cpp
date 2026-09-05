@@ -61,7 +61,7 @@ piho::GraphTransferDescriptor transferDescriptor(const std::vector<uint8_t> &ima
     };
 }
 
-void makeActive(piho::GraphStore &store, const std::vector<uint8_t> &image) {
+void stage(piho::GraphStore &store, const std::vector<uint8_t> &image) {
     const piho::GraphReceiveDescriptor receive{
         static_cast<uint32_t>(image.size()), readUint32(&image[8]),
         readUint32(&image[piho::kGraphChecksumOffset])};
@@ -76,6 +76,10 @@ void makeActive(piho::GraphStore &store, const std::vector<uint8_t> &image) {
     }
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphStoreError::None),
                             static_cast<uint8_t>(store.finishReceive()));
+}
+
+void makeActive(piho::GraphStore &store, const std::vector<uint8_t> &image) {
+    stage(store, image);
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphStoreError::None),
                             static_cast<uint8_t>(store.activate()));
 }
@@ -130,6 +134,23 @@ struct SimulatedBus {
     uint8_t dropDevice = 0;
     bool dropPending = false;
 };
+
+struct ActivationCapture {
+    uint32_t calls = 0;
+    uint32_t lastAppliedGeneration = 0;
+    uint32_t rejectedGeneration = 0;
+};
+
+bool captureActivation(void *context, const piho::GraphIdentity &identity,
+                       uint32_t) {
+    auto &capture = *static_cast<ActivationCapture *>(context);
+    ++capture.calls;
+    if (identity.generation == capture.rejectedGeneration) {
+        return false;
+    }
+    capture.lastAppliedGeneration = identity.generation;
+    return true;
+}
 
 void tick(SimulatedBus &bus, piho::GraphUpdateCoordinator &coordinator,
           piho::GraphUpdateParticipant &first, piho::GraphUpdateParticipant &second,
@@ -345,6 +366,41 @@ void test_graph_update_can_codec_is_strict_and_low_priority() {
     frame.data[7] = 1;
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::ProtocolError::InvalidPayload),
                             static_cast<uint8_t>(piho::ProtocolCodec::decode(frame).error));
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphRuntimeIdentity(7, identity, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_UINT32(identity.generation,
+                             decoded.message.graphNode.identity.generation);
+    TEST_ASSERT_EQUAL_HEX32(identity.checksum,
+                            decoded.message.graphNode.identity.checksum);
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphFlowCounters(
+        1, 0x10203040, 0x50607080, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(0x10203040,
+                            decoded.message.graphNode.flowAcceptedEvents);
+    TEST_ASSERT_EQUAL_HEX32(0x50607080,
+                            decoded.message.graphNode.flowEvaluatedActions);
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphActionCounters(
+        1, 0x90A0B0C0, 0xD0E0F001, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(0x90A0B0C0,
+                            decoded.message.graphNode.actionRetries);
+    TEST_ASSERT_EQUAL_HEX32(0xD0E0F001,
+                            decoded.message.graphNode.actionRejections);
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphExecutorCounters(
+        7, 0x12345678, 0x9ABCDEF0, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(0x12345678,
+                            decoded.message.graphNode.executorExecutedActions);
+    TEST_ASSERT_EQUAL_HEX32(0x9ABCDEF0,
+                            decoded.message.graphNode.executorRejectedActions);
 
     piho::CanFrame action{};
     const piho::ActionRequest request{1, 1, 1, 1, 7, true};
@@ -596,10 +652,58 @@ void test_gateway_reports_rejection_abort_missing_devices_and_timeout() {
     TEST_ASSERT_FALSE(fourthStore.hasStagedGraph());
 }
 
+void test_participant_restores_runtime_and_store_when_activation_fails() {
+    FakeGraphStoreBackend backend;
+    piho::GraphStore store(backend);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphStoreError::None),
+                            static_cast<uint8_t>(store.begin()));
+    const std::vector<uint8_t> active = graphImage(1);
+    const std::vector<uint8_t> rejected = graphImage(2);
+    makeActive(store, active);
+    stage(store, rejected);
+
+    SimulatedBus bus;
+    piho::GraphUpdateParticipant participant;
+    ActivationCapture activation{};
+    TEST_ASSERT_TRUE(participant.begin(1, piho::GraphDeviceRole::Input, store,
+                                       SimulatedBus::write, &bus, 0,
+                                       captureActivation, &activation));
+    TEST_ASSERT_EQUAL_UINT32(1, activation.calls);
+    TEST_ASSERT_EQUAL_UINT32(1, activation.lastAppliedGeneration);
+    activation.rejectedGeneration = 2;
+
+    const piho::GraphIdentity target{
+        piho::kGraphFormatVersion, piho::kGraphExecutorApiVersion, 2,
+        readUint32(&rejected[piho::kGraphChecksumOffset])};
+    piho::CanFrame frame{};
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphActivate(target, frame));
+    const piho::DecodeResult decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    participant.handle(decoded.message, 100);
+
+    TEST_ASSERT_EQUAL_UINT32(1, store.status().active.generation);
+    TEST_ASSERT_EQUAL_UINT32(1, activation.lastAppliedGeneration);
+    TEST_ASSERT_EQUAL_UINT32(3, activation.calls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphUpdateState::Rollback),
+                            static_cast<uint8_t>(participant.status().state));
+
+    bool reportedRuntimeFailure = false;
+    for (const piho::CanFrame &published : bus.frames) {
+        const piho::DecodeResult status = piho::ProtocolCodec::decode(published);
+        TEST_ASSERT_TRUE(status.ok());
+        if (status.message.type == piho::MessageType::GraphStatusIdentity &&
+            status.message.graph.error == piho::GraphUpdateError::Runtime) {
+            reportedRuntimeFailure = true;
+        }
+    }
+    TEST_ASSERT_TRUE(reportedRuntimeFailure);
+}
+
 }  // namespace
 
 void runGraphUpdateTests() {
     RUN_TEST(test_graph_update_can_codec_is_strict_and_low_priority);
     RUN_TEST(test_gateway_stages_activates_retries_and_rolls_back_all_boards);
     RUN_TEST(test_gateway_reports_rejection_abort_missing_devices_and_timeout);
+    RUN_TEST(test_participant_restores_runtime_and_store_when_activation_fails);
 }

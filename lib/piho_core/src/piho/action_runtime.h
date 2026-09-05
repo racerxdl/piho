@@ -32,6 +32,7 @@ using OutputPinWrite = bool (*)(void *context, uint8_t localPin, bool value);
 
 struct OutputActionCounters {
     uint32_t executed = 0;
+    uint32_t rejected = 0;
     uint32_t duplicates = 0;
     uint32_t wrongGenerations = 0;
     uint32_t unknownActions = 0;
@@ -54,6 +55,7 @@ class OutputActionExecutor {
 
     ActionAcknowledgement execute(const ActionRequest &request, uint32_t nowMilliseconds);
     std::size_t service(uint32_t nowMilliseconds);
+    void synchronizeOutputs(uint16_t currentOutputs) { currentOutputs_ = currentOutputs; }
 
     bool active() const { return graph_ != nullptr; }
     uint16_t currentOutputs() const { return currentOutputs_; }
@@ -79,7 +81,7 @@ class OutputActionExecutor {
 
     void resetRuntime(uint16_t currentOutputs);
     ActionAcknowledgement acknowledgement(const ActionRequest &request,
-                                            ActionAckStatus status) const;
+                                            ActionAckStatus status);
     bool writeLogicalPin(uint8_t pin, bool value);
 
     uint8_t device_ = 0;

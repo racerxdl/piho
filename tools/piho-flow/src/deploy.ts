@@ -15,7 +15,7 @@ import {
 import { PihoSerialClient } from "./serial.ts";
 import type { CompiledGraph } from "./types.ts";
 
-const ALL_NODE_STATUS_PARTS = 0x1ff;
+const ALL_NODE_STATUS_PARTS = (1 << GraphNodeStatusPart.ExecutorCounters) - 1;
 const DEFAULT_OPERATION_TIMEOUT_MS = 5_000;
 const DISCOVERY_QUIET_MS = 250;
 const COMMAND_ATTEMPTS = 3;
@@ -39,12 +39,19 @@ export interface NetworkNodeReport {
   readonly active: GraphIdentityReport | null;
   readonly staged: GraphIdentityReport | null;
   readonly rollback: GraphIdentityReport | null;
+  readonly runtime: GraphIdentityReport | null;
   readonly activeDevices: number;
   readonly stagedDevices: number;
   readonly rollbackDevices: number;
   readonly rxDropped: number;
   readonly txDropped: number;
   readonly busErrors: number;
+  readonly flowAcceptedEvents: number;
+  readonly flowEvaluatedActions: number;
+  readonly actionRetries: number;
+  readonly actionRejections: number;
+  readonly executorExecutedActions: number;
+  readonly executorRejectedActions: number;
 }
 
 export interface NetworkIssue {
@@ -59,6 +66,7 @@ export interface NetworkIssue {
     | "active_mismatch"
     | "staged_mismatch"
     | "rollback_mismatch"
+    | "runtime_mismatch"
     | "rejected"
     | "timeout"
     | "transport";
@@ -129,12 +137,19 @@ interface MutableNodeStatus {
   active: GraphIdentityReport | null;
   staged: GraphIdentityReport | null;
   rollback: GraphIdentityReport | null;
+  runtime: GraphIdentityReport | null;
   activeDevices: number;
   stagedDevices: number;
   rollbackDevices: number;
   rxDropped: number;
   txDropped: number;
   busErrors: number;
+  flowAcceptedEvents: number;
+  flowEvaluatedActions: number;
+  actionRetries: number;
+  actionRejections: number;
+  executorExecutedActions: number;
+  executorRejectedActions: number;
 }
 
 function emptyNode(id: number): MutableNodeStatus {
@@ -152,12 +167,19 @@ function emptyNode(id: number): MutableNodeStatus {
     active: null,
     staged: null,
     rollback: null,
+    runtime: null,
     activeDevices: 0,
     stagedDevices: 0,
     rollbackDevices: 0,
     rxDropped: 0,
     txDropped: 0,
     busErrors: 0,
+    flowAcceptedEvents: 0,
+    flowEvaluatedActions: 0,
+    actionRetries: 0,
+    actionRejections: 0,
+    executorExecutedActions: 0,
+    executorRejectedActions: 0,
   };
 }
 
@@ -168,7 +190,7 @@ function identity(generation: number, checksum: number): GraphIdentityReport | n
 function ingestNodeStatus(nodes: Map<number, MutableNodeStatus>, event: GraphNodeStatusDeviceEvent): void {
   const node = nodes.get(event.device) ?? emptyNode(event.device);
   if (event.part >= GraphNodeStatusPart.Capabilities &&
-      event.part <= GraphNodeStatusPart.TransportErrors) {
+      event.part <= GraphNodeStatusPart.ExecutorCounters) {
     node.parts |= 1 << (event.part - 1);
   }
   switch (event.part) {
@@ -207,6 +229,21 @@ function ingestNodeStatus(nodes: Map<number, MutableNodeStatus>, event: GraphNod
     case GraphNodeStatusPart.TransportErrors:
       node.busErrors = event.busErrors;
       break;
+    case GraphNodeStatusPart.RuntimeIdentity:
+      node.runtime = identity(event.runtimeGeneration, event.runtimeChecksum);
+      break;
+    case GraphNodeStatusPart.FlowCounters:
+      node.flowAcceptedEvents = event.flowAcceptedEvents;
+      node.flowEvaluatedActions = event.flowEvaluatedActions;
+      break;
+    case GraphNodeStatusPart.ActionCounters:
+      node.actionRetries = event.actionRetries;
+      node.actionRejections = event.actionRejections;
+      break;
+    case GraphNodeStatusPart.ExecutorCounters:
+      node.executorExecutedActions = event.executorExecutedActions;
+      node.executorRejectedActions = event.executorRejectedActions;
+      break;
   }
   nodes.set(event.device, node);
 }
@@ -226,12 +263,19 @@ function nodeReport(node: MutableNodeStatus): NetworkNodeReport {
     active: node.active,
     staged: node.staged,
     rollback: node.rollback,
+    runtime: node.runtime,
     activeDevices: node.activeDevices,
     stagedDevices: node.stagedDevices,
     rollbackDevices: node.rollbackDevices,
     rxDropped: node.rxDropped,
     txDropped: node.txDropped,
     busErrors: node.busErrors,
+    flowAcceptedEvents: node.flowAcceptedEvents,
+    flowEvaluatedActions: node.flowEvaluatedActions,
+    actionRetries: node.actionRetries,
+    actionRejections: node.actionRejections,
+    executorExecutedActions: node.executorExecutedActions,
+    executorRejectedActions: node.executorRejectedActions,
   };
 }
 
@@ -263,6 +307,15 @@ function graphRoles(graph: CompiledGraph): Map<number, DeviceRole> {
 
 function sameIdentity(left: GraphIdentityReport | null, right: GraphIdentityReport): boolean {
   return left?.generation === right.generation && left.checksum === right.checksum;
+}
+
+function sameNullableIdentity(
+  left: GraphIdentityReport | null,
+  right: GraphIdentityReport | null,
+): boolean {
+  return left === null
+    ? right === null
+    : right !== null && sameIdentity(left, right);
 }
 
 function consensusIdentity(
@@ -497,6 +550,14 @@ function inspectNodes(
         devices: [device],
         detail: `device ${device} reports graph update error ${GraphUpdateError[node.updateError] ?? node.updateError}`,
         severity: "warning",
+      });
+    }
+    if (!sameNullableIdentity(node.runtime, node.active)) {
+      issues.push({
+        kind: "runtime_mismatch",
+        devices: [device],
+        detail: `device ${device} has not loaded its stored active graph`,
+        severity: "error",
       });
     }
     if (expectedActive !== null &&

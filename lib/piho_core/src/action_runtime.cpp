@@ -62,8 +62,12 @@ void OutputActionExecutor::resetRuntime(uint16_t currentOutputs) {
     counters_ = OutputActionCounters{};
 }
 
-ActionAcknowledgement OutputActionExecutor::acknowledgement(const ActionRequest &request,
-                                                             ActionAckStatus status) const {
+ActionAcknowledgement OutputActionExecutor::acknowledgement(
+    const ActionRequest &request, ActionAckStatus status) {
+    if (status != ActionAckStatus::Executed &&
+        status != ActionAckStatus::AlreadyExecuted) {
+        increment(counters_.rejected);
+    }
     ActionAcknowledgement result{};
     result.generation = request.generation;
     result.eventToken = request.eventToken;

@@ -13,6 +13,9 @@ constexpr uint32_t kGraphUpdateSessionTimeoutMs = 5000;
 constexpr uint8_t kGraphAnnouncementPartCount = 4;
 
 using GraphUpdateFrameWrite = bool (*)(void *context, const CanFrame &frame);
+using GraphActivationApply = bool (*)(void *context,
+                                      const GraphIdentity &identity,
+                                      uint32_t nowMilliseconds);
 
 struct GraphNodeUpdateStatus {
     uint16_t transferId = 0;
@@ -36,7 +39,9 @@ class GraphUpdateParticipant {
    public:
     bool begin(uint8_t device, GraphDeviceRole role, GraphStore &store,
                GraphUpdateFrameWrite writeFrame, void *writeContext,
-               uint32_t nowMilliseconds);
+               uint32_t nowMilliseconds,
+               GraphActivationApply applyActive = nullptr,
+               void *applyContext = nullptr);
     void handle(const ProtocolMessage &message, uint32_t nowMilliseconds);
     void service(uint32_t nowMilliseconds);
 
@@ -49,6 +54,7 @@ class GraphUpdateParticipant {
     static bool descriptorsEqual(const GraphTransferDescriptor &left,
                                  const GraphTransferDescriptor &right);
     static void increment(uint32_t &counter);
+    bool applyActiveGraph(uint32_t nowMilliseconds);
 
     void handleAnnouncement(const ProtocolMessage &message, uint32_t nowMilliseconds);
     void handleChunk(const GraphTransferMessage &graph, uint32_t nowMilliseconds);
@@ -69,6 +75,8 @@ class GraphUpdateParticipant {
     GraphStore *store_ = nullptr;
     GraphUpdateFrameWrite writeFrame_ = nullptr;
     void *writeContext_ = nullptr;
+    GraphActivationApply applyActive_ = nullptr;
+    void *applyContext_ = nullptr;
     GraphTransferDescriptor descriptor_{};
     GraphNodeUpdateStatus status_{};
     GraphUpdateCounters counters_{};

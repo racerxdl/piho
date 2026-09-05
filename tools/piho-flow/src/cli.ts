@@ -245,9 +245,13 @@ function nodeText(node: NetworkNodeReport): string {
     `active=${identityText(node.active)}`,
     `staged=${identityText(node.staged)}`,
     `rollback=${identityText(node.rollback)}`,
+    `runtime=${identityText(node.runtime)}`,
     `update=${updateState}/${updateError}`,
     `storage=${node.storeState}/${storeError}`,
     `transport=${node.rxDropped}/${node.txDropped}/${node.busErrors}`,
+    `flow=${node.flowAcceptedEvents}/${node.flowEvaluatedActions}`,
+    `actions=${node.actionRetries}/${node.actionRejections}`,
+    `executor=${node.executorExecutedActions}/${node.executorRejectedActions}`,
     `complete=${node.complete}`,
   ].join(" ");
 }

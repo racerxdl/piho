@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include <cstdint>
+#include <optional>
 
 #include "can2040_transport.h"
 #include "config.h"
@@ -8,12 +9,9 @@
 #include "io.h"
 #include "piho.h"
 #include "piho/graph_update.h"
+#include "piho/runtime.h"
 #include "storage.h"
 #include "uart.h"
-
-#ifndef IS_INPUT_DEVICE
-#include "piho/trigger_table.h"
-#endif
 
 namespace {
 
@@ -23,19 +21,30 @@ piho::GraphUpdateParticipant graphUpdateParticipant;
 piho::GraphUpdateCoordinator graphUpdateCoordinator;
 uint32_t lastGraphUpdateRevision = 0;
 #ifdef IS_INPUT_DEVICE
-constexpr piho::GraphDeviceRole kLocalGraphRole = piho::GraphDeviceRole::Input;
-#else
-constexpr piho::GraphDeviceRole kLocalGraphRole = piho::GraphDeviceRole::Output;
-#endif
-#ifdef IS_INPUT_DEVICE
+constexpr piho::GraphDeviceRole kLocalGraphRole =
+    piho::GraphDeviceRole::Input;
+std::optional<piho::InputGraphRuntime> graphRuntime;
 uint32_t lastInputCheck = 0;
 #else
-piho::TriggerRouter triggerRouter;
+constexpr piho::GraphDeviceRole kLocalGraphRole =
+    piho::GraphDeviceRole::Output;
+std::optional<piho::OutputGraphRuntime> graphRuntime;
 #endif
+
+bool sameIdentity(const piho::GraphIdentity &left,
+                  const piho::GraphIdentity &right) {
+    return left.generation == right.generation &&
+           left.checksum == right.checksum;
+}
 
 void reportApplicationError(DeviceErrorCode code) {
     signalError();
     sendErrorEvent(code);
+}
+
+piho::GraphRuntimeStatus runtimeStatus() {
+    return graphRuntime.has_value() ? graphRuntime->status()
+                                    : piho::GraphRuntimeStatus{};
 }
 
 void onHealthCheck(void *) {
@@ -48,74 +57,91 @@ void onReset(void *) {
 
 void onInputState(void *, uint8_t sourceDevice, uint16_t state) {
     sendInputStateEvent(sourceDevice, state);
-#ifndef IS_INPUT_DEVICE
-    const uint16_t toggleMask = triggerRouter.update(sourceDevice, state, triggerRules);
-    if (toggleMask != 0) {
-        toggleOutputs(toggleMask);
-    }
-#endif
 }
 
 #ifndef IS_INPUT_DEVICE
+void synchronizeOutputRuntime() {
+    if (graphRuntime.has_value()) {
+        graphRuntime->synchronizeOutputs(outputState());
+    }
+}
+
 void onOutputState(void *, uint16_t state) {
     setOutputState(state);
+    synchronizeOutputRuntime();
 }
 
 void onSetPin(void *, uint8_t localPin, bool value) {
     setOutputPin(localPin, value);
+    synchronizeOutputRuntime();
 }
 
 void onSetByte(void *, uint8_t localByte, uint8_t value) {
     setOutputByte(localByte, value);
+    synchronizeOutputRuntime();
 }
 
-bool persistTriggerChange(const piho::TriggerTable &previous) {
-    if (triggerStorage.save(triggerRules)) {
-        return true;
-    }
-    triggerRules = previous;
-    reportApplicationError(DeviceErrorCode::Storage);
-    return false;
-}
-
-bool onUpsertTrigger(void *, const piho::TriggerRule &rule) {
-    const piho::TriggerTable previous = triggerRules;
-    switch (triggerRules.upsert(rule)) {
-        case piho::TriggerUpdateResult::Inserted:
-            return persistTriggerChange(previous);
-        case piho::TriggerUpdateResult::AlreadyPresent:
-            return true;
-        case piho::TriggerUpdateResult::Full:
-            reportApplicationError(DeviceErrorCode::TriggerTableFull);
-            return false;
-        case piho::TriggerUpdateResult::Invalid:
-            reportApplicationError(DeviceErrorCode::OutOfRange);
-            return false;
-    }
-    return false;
-}
-
-bool onRemoveTrigger(void *, const piho::TriggerRule &rule) {
-    const piho::TriggerTable previous = triggerRules;
-    if (!triggerRules.remove(rule)) {
-        return true;
-    }
-    return persistTriggerChange(previous);
-}
-
-bool onClearTriggers(void *) {
-    if (triggerRules.size() == 0) {
-        return true;
-    }
-    const piho::TriggerTable previous = triggerRules;
-    triggerRules.clear();
-    return persistTriggerChange(previous);
+bool writeOutputPin(void *, uint8_t localPin, bool value) {
+    setOutputPin(localPin, value);
+    return true;
 }
 #endif
 
 bool writeGraphUpdateFrame(void *, const piho::CanFrame &frame) {
     return controller.sendGraphUpdateFrame(frame);
 }
+
+bool writeActionFrame(void *, const piho::CanFrame &frame) {
+    return controller.sendActionFrame(frame);
+}
+
+bool applyActiveGraph(void *, const piho::GraphIdentity &identity,
+                      uint32_t nowMilliseconds) {
+    if (sameIdentity(runtimeStatus().identity, identity)) {
+        return true;
+    }
+#ifdef IS_INPUT_DEVICE
+    const uint16_t baseline = readInputPins();
+    if (!graphRuntime.has_value() || !graphRuntime->activate(baseline) ||
+        graphRuntime->activeGraph() == nullptr) {
+        reportApplicationError(DeviceErrorCode::GraphUpdate);
+        return false;
+    }
+    configureInputDebounce(*graphRuntime->activeGraph(), baseline,
+                           nowMilliseconds);
+    sendInputStateEvent(controller.deviceId(), baseline);
+    controller.reportInputState(baseline);
+#else
+    if (!graphRuntime.has_value() ||
+        !graphRuntime->activate(outputState())) {
+        reportApplicationError(DeviceErrorCode::GraphUpdate);
+        return false;
+    }
+#endif
+    if (!sameIdentity(runtimeStatus().identity, identity)) {
+        reportApplicationError(DeviceErrorCode::GraphUpdate);
+        return false;
+    }
+    return true;
+}
+
+#ifndef IS_INPUT_DEVICE
+void onExecuteAction(void *, const piho::ActionRequest &request) {
+    if (!graphRuntime.has_value()) {
+        return;
+    }
+    const piho::ActionAcknowledgement acknowledgement =
+        graphRuntime->execute(request, millis());
+    controller.acknowledgeAction(acknowledgement);
+}
+#else
+void onActionAcknowledgement(
+    void *, const piho::ActionAcknowledgement &acknowledgement) {
+    if (graphRuntime.has_value()) {
+        graphRuntime->acknowledge(acknowledgement, millis());
+    }
+}
+#endif
 
 void publishTransportStatus() {
     const CanTransportStats stats = controller.transportStats();
@@ -131,15 +157,39 @@ void publishTransportStatus() {
     }
 }
 
+void publishRuntimeStatus() {
+    const piho::GraphRuntimeStatus status = runtimeStatus();
+    piho::CanFrame frames[4]{};
+    const bool encoded[] = {
+        piho::ProtocolCodec::graphRuntimeIdentity(
+            controller.deviceId(), status.identity, frames[0]),
+        piho::ProtocolCodec::graphFlowCounters(
+            controller.deviceId(), status.flowAcceptedEvents,
+            status.flowEvaluatedActions, frames[1]),
+        piho::ProtocolCodec::graphActionCounters(
+            controller.deviceId(), status.actionRetries,
+            status.actionRejections, frames[2]),
+        piho::ProtocolCodec::graphExecutorCounters(
+            controller.deviceId(), status.executorExecutedActions,
+            status.executorRejectedActions, frames[3]),
+    };
+    for (uint8_t index = 0; index < 4; ++index) {
+        if (encoded[index]) {
+            controller.sendGraphUpdateFrame(frames[index]);
+        }
+    }
+}
+
 void onGraphUpdate(void *, const piho::ProtocolMessage &message) {
     const uint32_t now = millis();
     graphUpdateParticipant.handle(message, now);
     graphUpdateCoordinator.handle(message, now);
     if (message.type == piho::MessageType::GraphStatusRequest) {
         publishTransportStatus();
+        publishRuntimeStatus();
     }
     if (message.type >= piho::MessageType::GraphNodeCapabilities &&
-        message.type <= piho::MessageType::GraphTransportErrors) {
+        message.type <= piho::MessageType::GraphExecutorCounters) {
         sendGraphNodeStatusEvent(message);
     }
 }
@@ -168,27 +218,39 @@ PihoCallbacks callbacks() {
     result.onInputState = onInputState;
     result.onError = onControllerError;
     result.onGraphUpdate = onGraphUpdate;
-#ifndef IS_INPUT_DEVICE
+#ifdef IS_INPUT_DEVICE
+    result.onActionAcknowledgement = onActionAcknowledgement;
+#else
     result.onOutputState = onOutputState;
     result.onSetPin = onSetPin;
     result.onSetByte = onSetByte;
-    result.onUpsertTrigger = onUpsertTrigger;
-    result.onRemoveTrigger = onRemoveTrigger;
-    result.onClearTriggers = onClearTriggers;
+    result.onExecuteAction = onExecuteAction;
 #endif
     return result;
 }
 
 #ifdef IS_INPUT_DEVICE
 void publishInputState(uint32_t nowMilliseconds) {
-    uint16_t state = 0;
-    if (!sampleInputs(nowMilliseconds, state)) {
+    piho::DebounceUpdate update{};
+    if (!sampleInputs(nowMilliseconds, update)) {
         return;
     }
-    sendInputStateEvent(controller.deviceId(), state);
-    controller.reportInputState(state);
+    sendInputStateEvent(controller.deviceId(), update.state);
+    controller.reportInputState(update.state);
+    if (update.changed != 0 && graphRuntime.has_value() &&
+        graphRuntime->active()) {
+        graphRuntime->submitInput(piho::FlowInputUpdate{
+            update.state, update.changed, update.rising, update.falling,
+            nowMilliseconds});
+    }
 }
 #endif
+
+void serviceGraphRuntime(uint32_t nowMilliseconds) {
+    if (graphRuntime.has_value()) {
+        graphRuntime->service(nowMilliseconds);
+    }
+}
 
 }  // namespace
 
@@ -206,24 +268,31 @@ void setup() {
     initializeInputs();
 #else
     initializeOutputs();
-    if (!triggerStorage.begin(triggerRules)) {
-        reportApplicationError(DeviceErrorCode::Storage);
-    }
 #endif
 
     controller.setCallbacks(callbacks());
     if (!controller.begin(deviceId)) {
         reportApplicationError(DeviceErrorCode::Transport);
     }
+#ifdef IS_INPUT_DEVICE
+    graphRuntime.emplace(deviceId, graphStore, writeActionFrame, nullptr);
+#else
+    graphRuntime.emplace(deviceId, graphStore, writeOutputPin, nullptr);
+#endif
     graphUpdateCoordinator.configure(writeGraphUpdateFrame);
-    if (!graphUpdateParticipant.begin(deviceId, kLocalGraphRole, graphStore,
-                                      writeGraphUpdateFrame, nullptr, millis())) {
-        reportApplicationError(DeviceErrorCode::Storage);
+    const uint32_t now = millis();
+    const bool participantStarted = graphUpdateParticipant.begin(
+        deviceId, kLocalGraphRole, graphStore, writeGraphUpdateFrame, nullptr,
+        now, applyActiveGraph, nullptr);
+    if (!participantStarted && !graphStore.hasActiveGraph()) {
+        reportApplicationError(DeviceErrorCode::GraphUpdate);
     }
 
 #ifdef IS_INPUT_DEVICE
-    lastInputCheck = millis();
-    publishInputState(lastInputCheck);
+    lastInputCheck = now;
+    if (!graphRuntime->active()) {
+        publishInputState(now);
+    }
 #endif
 }
 
@@ -232,13 +301,16 @@ void loop() {
     controller.poll();
     graphUpdateParticipant.service(now);
     graphUpdateCoordinator.service(now);
-    handleUART(controller, graphUpdateCoordinator);
+    handleUART(controller, graphUpdateCoordinator,
+               graphUpdateParticipant.status(), runtimeStatus());
 #ifdef IS_INPUT_DEVICE
-    if (static_cast<uint32_t>(now - lastInputCheck) >= IO_CHECK_INTERVAL_MS) {
+    if (static_cast<uint32_t>(now - lastInputCheck) >=
+        IO_CHECK_INTERVAL_MS) {
         lastInputCheck = now;
         publishInputState(now);
     }
 #endif
+    serviceGraphRuntime(now);
     const uint32_t graphRevision = graphUpdateCoordinator.revision();
     if (graphRevision != lastGraphUpdateRevision) {
         lastGraphUpdateRevision = graphRevision;

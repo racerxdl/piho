@@ -15,16 +15,6 @@ message ResetCommand {
   bool broadcast = 2;
 }
 
-message TriggerCommand {
-  uint32 input_device = 1;
-  uint32 input_pin = 2;
-  uint32 output_device = 3;
-  uint32 output_pin = 4;
-}
-
-message DeviceCommand {
-  uint32 device = 1;
-}
 
 message GraphBeginCommand {
   uint32 transfer_id = 1;
@@ -62,15 +52,14 @@ message GraphStatusCommand {
 }
 
 message HostCommand {
+  reserved 6, 7, 8;
+  reserved "upsert_trigger", "remove_trigger", "clear_triggers";
   oneof command {
     Empty health_check = 1;
     IndexedValue set_pin = 2;
     IndexedValue set_byte = 3;
     ResetCommand reset = 4;
     Empty status = 5;
-    TriggerCommand upsert_trigger = 6;
-    TriggerCommand remove_trigger = 7;
-    DeviceCommand clear_triggers = 8;
     GraphBeginCommand graph_begin = 9;
     GraphChunkCommand graph_chunk = 10;
     GraphFinishCommand graph_finish = 11;
@@ -87,13 +76,25 @@ message InputStateEvent {
 }
 
 message StatusEvent {
+  reserved 4;
+  reserved "trigger_count";
   uint32 device = 1;
   bool input_device = 2;
   uint32 gpio_state = 3;
-  uint32 trigger_count = 4;
   uint32 rx_dropped = 5;
   uint32 tx_dropped = 6;
   uint32 bus_errors = 7;
+  uint32 graph_generation = 8;
+  uint32 graph_checksum = 9;
+  GraphUpdateState update_state = 10;
+  GraphStoreState store_state = 11;
+  GraphStoreError store_error = 12;
+  uint32 flow_accepted_events = 13;
+  uint32 flow_evaluated_actions = 14;
+  uint32 action_retries = 15;
+  uint32 action_rejections = 16;
+  uint32 executor_executed_actions = 17;
+  uint32 executor_rejected_actions = 18;
 }
 
 enum GraphUpdateState {
@@ -123,6 +124,7 @@ enum GraphUpdateError {
   GRAPH_UPDATE_ERROR_ABORTED = 13;
   GRAPH_UPDATE_ERROR_WRONG_ROLE = 14;
   GRAPH_UPDATE_ERROR_INCOMPATIBLE = 15;
+  GRAPH_UPDATE_ERROR_RUNTIME = 16;
 }
 
 enum DeviceRole {
@@ -173,6 +175,10 @@ enum GraphNodeStatusPart {
   GRAPH_NODE_STATUS_PART_ROLLBACK_MANIFEST = 7;
   GRAPH_NODE_STATUS_PART_TRANSPORT_DROPS = 8;
   GRAPH_NODE_STATUS_PART_TRANSPORT_ERRORS = 9;
+  GRAPH_NODE_STATUS_PART_RUNTIME_IDENTITY = 10;
+  GRAPH_NODE_STATUS_PART_FLOW_COUNTERS = 11;
+  GRAPH_NODE_STATUS_PART_ACTION_COUNTERS = 12;
+  GRAPH_NODE_STATUS_PART_EXECUTOR_COUNTERS = 13;
 }
 
 message GraphNodeStatusEvent {
@@ -194,6 +200,14 @@ message GraphNodeStatusEvent {
   uint32 rx_dropped = 16;
   uint32 tx_dropped = 17;
   uint32 bus_errors = 18;
+  uint32 runtime_generation = 19;
+  uint32 runtime_checksum = 20;
+  uint32 flow_accepted_events = 21;
+  uint32 flow_evaluated_actions = 22;
+  uint32 action_retries = 23;
+  uint32 action_rejections = 24;
+  uint32 executor_executed_actions = 25;
+  uint32 executor_rejected_actions = 26;
 }
 
 message GraphUpdateEvent {
@@ -217,13 +231,14 @@ message GraphUpdateEvent {
 
 message ErrorEvent {
   enum Code {
+    reserved 6;
+    reserved "TRIGGER_TABLE_FULL";
     UNKNOWN = 0;
     INVALID_FRAME = 1;
     INVALID_COMMAND = 2;
     OUT_OF_RANGE = 3;
     TRANSPORT = 4;
     STORAGE = 5;
-    TRIGGER_TABLE_FULL = 6;
     GRAPH_UPDATE = 7;
   }
 
@@ -232,14 +247,13 @@ message ErrorEvent {
 
 message AckEvent {
   enum Operation {
+    reserved 5, 6, 7;
+    reserved "UPSERT_TRIGGER", "REMOVE_TRIGGER", "CLEAR_TRIGGERS";
     NONE = 0;
     HEALTH_CHECK = 1;
     SET_PIN = 2;
     SET_BYTE = 3;
     RESET = 4;
-    UPSERT_TRIGGER = 5;
-    REMOVE_TRIGGER = 6;
-    CLEAR_TRIGGERS = 7;
     GRAPH_BEGIN = 8;
     GRAPH_CHUNK = 9;
     GRAPH_FINISH = 10;

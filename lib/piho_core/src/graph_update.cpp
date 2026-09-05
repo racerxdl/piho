@@ -46,10 +46,15 @@ void GraphUpdateParticipant::increment(uint32_t &counter) {
 }
 
 bool GraphUpdateParticipant::begin(uint8_t device, GraphDeviceRole role,
-                                   GraphStore &store, GraphUpdateFrameWrite writeFrame,
-                                   void *writeContext, uint32_t nowMilliseconds) {
+                                   GraphStore &store,
+                                   GraphUpdateFrameWrite writeFrame,
+                                   void *writeContext,
+                                   uint32_t nowMilliseconds,
+                                   GraphActivationApply applyActive,
+                                   void *applyContext) {
     if (!isPhysicalDevice(device) ||
-        (role != GraphDeviceRole::Input && role != GraphDeviceRole::Output) ||
+        (role != GraphDeviceRole::Input &&
+         role != GraphDeviceRole::Output) ||
         writeFrame == nullptr) {
         return false;
     }
@@ -58,6 +63,8 @@ bool GraphUpdateParticipant::begin(uint8_t device, GraphDeviceRole role,
     store_ = &store;
     writeFrame_ = writeFrame;
     writeContext_ = writeContext;
+    applyActive_ = applyActive;
+    applyContext_ = applyContext;
     descriptor_ = GraphTransferDescriptor{};
     status_ = GraphNodeUpdateStatus{};
     counters_ = GraphUpdateCounters{};
@@ -67,7 +74,21 @@ bool GraphUpdateParticipant::begin(uint8_t device, GraphDeviceRole role,
     lastActivityAt_ = nowMilliseconds;
     initialized_ = true;
     syncStatusFromStore();
+    if (store_->hasActiveGraph() && !applyActiveGraph(nowMilliseconds)) {
+        status_.state = GraphUpdateState::Rejected;
+        status_.error = GraphUpdateError::Runtime;
+        return false;
+    }
     return true;
+}
+
+bool GraphUpdateParticipant::applyActiveGraph(uint32_t nowMilliseconds) {
+    if (store_ == nullptr || !store_->hasActiveGraph()) {
+        return false;
+    }
+    return applyActive_ == nullptr ||
+           applyActive_(applyContext_, store_->status().active,
+                        nowMilliseconds);
 }
 
 void GraphUpdateParticipant::syncStatusFromStore() {
@@ -508,6 +529,11 @@ void GraphUpdateParticipant::handleActivate(const GraphTransferMessage &graph,
     const GraphStoreStatus &stored = store_->status();
     if (store_->hasActiveGraph() &&
         identityMatches(stored.active, graph.generation, graph.checksum)) {
+        if (!applyActiveGraph(nowMilliseconds)) {
+            publishTransient(status_.transferId, graph.generation,
+                             graph.checksum, GraphUpdateError::Runtime);
+            return;
+        }
         status_.generation = graph.generation;
         status_.checksum = graph.checksum;
         status_.state = GraphUpdateState::Active;
@@ -529,6 +555,16 @@ void GraphUpdateParticipant::handleActivate(const GraphTransferMessage &graph,
                          GraphUpdateError::Storage);
         return;
     }
+    if (!applyActiveGraph(nowMilliseconds)) {
+        if (store_->hasRollbackGraph() &&
+            store_->rollback() == GraphStoreError::None) {
+            applyActiveGraph(nowMilliseconds);
+        }
+        syncStatusFromStore();
+        publishTransient(status_.transferId, graph.generation, graph.checksum,
+                         GraphUpdateError::Runtime);
+        return;
+    }
     status_.generation = graph.generation;
     status_.checksum = graph.checksum;
     status_.state = GraphUpdateState::Active;
@@ -543,6 +579,11 @@ void GraphUpdateParticipant::handleRollback(const GraphTransferMessage &graph,
     const GraphStoreStatus &stored = store_->status();
     if (store_->hasActiveGraph() &&
         identityMatches(stored.active, graph.generation, graph.checksum)) {
+        if (!applyActiveGraph(nowMilliseconds)) {
+            publishTransient(status_.transferId, graph.generation,
+                             graph.checksum, GraphUpdateError::Runtime);
+            return;
+        }
         status_.generation = graph.generation;
         status_.checksum = graph.checksum;
         status_.state = GraphUpdateState::Rollback;
@@ -561,6 +602,16 @@ void GraphUpdateParticipant::handleRollback(const GraphTransferMessage &graph,
     if (store_->rollback() != GraphStoreError::None) {
         publishTransient(status_.transferId, graph.generation, graph.checksum,
                          GraphUpdateError::Storage);
+        return;
+    }
+    if (!applyActiveGraph(nowMilliseconds)) {
+        if (store_->hasRollbackGraph() &&
+            store_->rollback() == GraphStoreError::None) {
+            applyActiveGraph(nowMilliseconds);
+        }
+        syncStatusFromStore();
+        publishTransient(status_.transferId, graph.generation, graph.checksum,
+                         GraphUpdateError::Runtime);
         return;
     }
     status_.generation = graph.generation;

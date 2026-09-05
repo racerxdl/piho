@@ -40,12 +40,19 @@ interface SimulatedNode {
   active: GraphIdentityReport | null;
   staged: GraphIdentityReport | null;
   rollback: GraphIdentityReport | null;
+  runtime: GraphIdentityReport | null;
   activeDevices: number;
   stagedDevices: number;
   rollbackDevices: number;
   rxDropped: number;
   txDropped: number;
   busErrors: number;
+  flowAcceptedEvents: number;
+  flowEvaluatedActions: number;
+  actionRetries: number;
+  actionRejections: number;
+  executorExecutedActions: number;
+  executorRejectedActions: number;
 }
 
 interface SimulatedFailure {
@@ -61,6 +68,7 @@ interface SimulatorOptions {
   readonly formats?: Readonly<Record<number, number>>;
   readonly executorApis?: Readonly<Record<number, number>>;
   readonly extra?: readonly { readonly id: number; readonly role: DeviceRole }[];
+  readonly runtimeMismatches?: readonly number[];
   readonly storageErrors?: Readonly<Record<number, GraphStoreError>>;
   readonly transport?: Readonly<Record<number, {
     readonly rxDropped: number;
@@ -114,6 +122,7 @@ class SimulatedNetworkTransport implements ByteTransport {
     const ids = graph.devices.map((device) => device.id);
     const deviceBitmap = bitmap(ids);
     const omitted = new Set(options.omit ?? []);
+    const runtimeMismatches = new Set(options.runtimeMismatches ?? []);
     const devices = [
       ...graph.devices.map((device) => ({ id: device.id, role: device.role })),
       ...(options.extra ?? []),
@@ -123,6 +132,7 @@ class SimulatedNetworkTransport implements ByteTransport {
         continue;
       }
       const counters = options.transport?.[device.id];
+      const active = identity(42, 0x1020_3040);
       this.nodes.set(device.id, {
         id: device.id,
         role: options.roles?.[device.id] ?? device.role,
@@ -133,15 +143,22 @@ class SimulatedNetworkTransport implements ByteTransport {
         updateError: GraphUpdateError.None,
         storeState: GraphStoreState.Active,
         storeError: options.storageErrors?.[device.id] ?? GraphStoreError.None,
-        active: identity(42, 0x1020_3040),
+        active,
         staged: null,
         rollback: identity(41, 0x5060_7080),
+        runtime: runtimeMismatches.has(device.id) ? null : active,
         activeDevices: deviceBitmap,
         stagedDevices: 0,
         rollbackDevices: deviceBitmap,
         rxDropped: counters?.rxDropped ?? 0,
         txDropped: counters?.txDropped ?? 0,
         busErrors: counters?.busErrors ?? 0,
+        flowAcceptedEvents: 0,
+        flowEvaluatedActions: 0,
+        actionRetries: 0,
+        actionRejections: 0,
+        executorExecutedActions: 0,
+        executorRejectedActions: 0,
       });
     }
   }
@@ -228,13 +245,45 @@ class SimulatedNetworkTransport implements ByteTransport {
       rxDropped: part === GraphNodeStatusPart.TransportDrops ? node.rxDropped : 0,
       txDropped: part === GraphNodeStatusPart.TransportDrops ? node.txDropped : 0,
       busErrors: part === GraphNodeStatusPart.TransportErrors ? node.busErrors : 0,
+      runtimeGeneration:
+        part === GraphNodeStatusPart.RuntimeIdentity
+          ? node.runtime?.generation ?? 0
+          : 0,
+      runtimeChecksum:
+        part === GraphNodeStatusPart.RuntimeIdentity
+          ? node.runtime?.checksum ?? 0
+          : 0,
+      flowAcceptedEvents:
+        part === GraphNodeStatusPart.FlowCounters
+          ? node.flowAcceptedEvents
+          : 0,
+      flowEvaluatedActions:
+        part === GraphNodeStatusPart.FlowCounters
+          ? node.flowEvaluatedActions
+          : 0,
+      actionRetries:
+        part === GraphNodeStatusPart.ActionCounters
+          ? node.actionRetries
+          : 0,
+      actionRejections:
+        part === GraphNodeStatusPart.ActionCounters
+          ? node.actionRejections
+          : 0,
+      executorExecutedActions:
+        part === GraphNodeStatusPart.ExecutorCounters
+          ? node.executorExecutedActions
+          : 0,
+      executorRejectedActions:
+        part === GraphNodeStatusPart.ExecutorCounters
+          ? node.executorRejectedActions
+          : 0,
     };
   }
 
   private publishInventory(): void {
     for (const node of this.nodes.values()) {
       for (let part = GraphNodeStatusPart.Capabilities;
-           part <= GraphNodeStatusPart.TransportErrors; part += 1) {
+           part <= GraphNodeStatusPart.ExecutorCounters; part += 1) {
         this.emit(this.nodeEvent(node, part));
       }
     }
@@ -383,6 +432,7 @@ class SimulatedNetworkTransport implements ByteTransport {
       node.rollbackDevices = node.activeDevices;
       node.active = node.staged;
       node.activeDevices = node.stagedDevices;
+      node.runtime = node.active;
       node.staged = null;
       node.stagedDevices = 0;
       node.updateState = GraphUpdateState.Active;
@@ -408,6 +458,7 @@ class SimulatedNetworkTransport implements ByteTransport {
       const previous = node.active;
       node.active = node.rollback;
       node.rollback = previous;
+      node.runtime = node.active;
       node.updateState = GraphUpdateState.Rollback;
       node.storeState = GraphStoreState.Rollback;
     }
@@ -512,6 +563,9 @@ describe("graph deployment", () => {
     expect(status.ok).toBe(true);
     expect(status.activeAgreement).toEqual(deployed.identity);
     expect(status.nodes.every((node) => node.complete && node.role !== null)).toBe(true);
+    expect(status.nodes.every((node) =>
+      node.runtime?.generation === deployed.identity.generation &&
+      node.runtime.checksum === deployed.identity.checksum)).toBe(true);
     expect(status.issues.some((issue) => issue.kind === "transport")).toBe(true);
     expect(status.nodes.find((node) => node.id === 2)).toMatchObject({
       rxDropped: 3,
@@ -525,6 +579,22 @@ describe("graph deployment", () => {
     expect(transport.activeIdentities().every((active) =>
       active.generation === previousActive.generation &&
       active.checksum === previousActive.checksum)).toBe(true);
+    await client.close();
+  });
+
+  test("reports a stored graph that the runtime has not loaded", async () => {
+    const image = await fixture();
+    const transport = new SimulatedNetworkTransport(image, {
+      runtimeMismatches: [7],
+    });
+    const client = new PihoSerialClient(transport);
+
+    const report = await readNetworkStatus(client, image, { timeoutMs: 500 });
+    expect(report.ok).toBe(false);
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      kind: "runtime_mismatch",
+      devices: [7],
+    }));
     await client.close();
   });
 

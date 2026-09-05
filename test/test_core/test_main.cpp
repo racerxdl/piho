@@ -9,14 +9,13 @@
 #include "piho/graph_image.h"
 #include "piho/protocol.h"
 #include "piho/serial_framer.h"
-#include "piho/trigger_table.h"
-#include "piho/trigger_storage_codec.h"
 
 void runGraphImageTests();
 void runFlowEngineTests();
 void runActionRuntimeTests();
 void runGraphStoreTests();
 void runGraphUpdateTests();
+void runRuntimeIntegrationTests();
 
 namespace {
 
@@ -188,6 +187,22 @@ void test_protocol_rejects_unrelated_and_malformed_frames() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::ProtocolError::RemoteFrame),
                             static_cast<uint8_t>(piho::ProtocolCodec::decode(remoteReset).error));
 
+    piho::CanFrame oldVersion = piho::ProtocolCodec::reset();
+    oldVersion.identifier ^= 1u << 16;
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::ProtocolError::InvalidIdentifier),
+        static_cast<uint8_t>(piho::ProtocolCodec::decode(oldVersion).error));
+
+    piho::CanFrame removedTrigger{};
+    removedTrigger.identifier =
+        piho::kProtocolHeader | (static_cast<uint32_t>(7) << 8) | 1u;
+    removedTrigger.length = 3;
+    removedTrigger.extended = true;
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::ProtocolError::UnsupportedType),
+        static_cast<uint8_t>(
+            piho::ProtocolCodec::decode(removedTrigger).error));
+
     piho::CanFrame shortOutput{};
     TEST_ASSERT_TRUE(piho::ProtocolCodec::outputState(2, 0xA55A, shortOutput));
     shortOutput.length = 1;
@@ -206,20 +221,6 @@ void test_input_and_output_state_are_little_endian() {
     TEST_ASSERT_EQUAL_HEX16(0xA55A, decoded.message.state);
 }
 
-void test_trigger_router_only_toggles_on_rising_edges() {
-    piho::TriggerTable table;
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::TriggerUpdateResult::Inserted),
-                            static_cast<uint8_t>(table.upsert(piho::TriggerRule{1, 2, 7})));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::TriggerUpdateResult::AlreadyPresent),
-                            static_cast<uint8_t>(table.upsert(piho::TriggerRule{1, 2, 7})));
-
-    piho::TriggerRouter router;
-    TEST_ASSERT_EQUAL_HEX16(0, router.update(1, 0, table));
-    TEST_ASSERT_EQUAL_HEX16(1u << 7, router.update(1, 1u << 2, table));
-    TEST_ASSERT_EQUAL_HEX16(0, router.update(1, 1u << 2, table));
-    TEST_ASSERT_EQUAL_HEX16(0, router.update(1, 0, table));
-    TEST_ASSERT_EQUAL_HEX16(1u << 7, router.update(1, 1u << 2, table));
-}
 
 void test_debouncer_requires_a_stable_candidate() {
     piho::InputDebouncer debouncer(100);
@@ -239,6 +240,8 @@ void test_debouncer_requires_a_stable_candidate() {
     update = debouncer.update(1, 130);
     TEST_ASSERT_EQUAL_HEX16(1, update.state);
     TEST_ASSERT_EQUAL_HEX16(1, update.changed);
+    TEST_ASSERT_EQUAL_HEX16(1, update.rising);
+    TEST_ASSERT_EQUAL_HEX16(0, update.falling);
 }
 
 void test_debouncer_handles_millisecond_wraparound() {
@@ -248,6 +251,39 @@ void test_debouncer_handles_millisecond_wraparound() {
     const piho::DebounceUpdate update = debouncer.update(1, 49);
     TEST_ASSERT_EQUAL_HEX16(1, update.state);
     TEST_ASSERT_EQUAL_HEX16(1, update.changed);
+}
+
+void test_debouncer_applies_per_pin_durations_and_rebaseline() {
+    piho::InputDebouncer debouncer;
+    TEST_ASSERT_TRUE(debouncer.setDebounceMilliseconds(0, 10));
+    TEST_ASSERT_TRUE(debouncer.setDebounceMilliseconds(1, 20));
+    TEST_ASSERT_FALSE(debouncer.setDebounceMilliseconds(16, 10));
+    debouncer.reset(0, 0);
+
+    debouncer.update(3, 1);
+    piho::DebounceUpdate update = debouncer.update(3, 11);
+    TEST_ASSERT_EQUAL_HEX16(1, update.state);
+    TEST_ASSERT_EQUAL_HEX16(1, update.changed);
+    TEST_ASSERT_EQUAL_HEX16(1, update.rising);
+    TEST_ASSERT_EQUAL_HEX16(0, update.falling);
+
+    update = debouncer.update(3, 21);
+    TEST_ASSERT_EQUAL_HEX16(3, update.state);
+    TEST_ASSERT_EQUAL_HEX16(2, update.rising);
+
+    debouncer.update(0, 30);
+    update = debouncer.update(0, 40);
+    TEST_ASSERT_EQUAL_HEX16(2, update.state);
+    TEST_ASSERT_EQUAL_HEX16(1, update.falling);
+    update = debouncer.update(0, 50);
+    TEST_ASSERT_EQUAL_HEX16(0, update.state);
+    TEST_ASSERT_EQUAL_HEX16(2, update.falling);
+
+    debouncer.reset(3, 100);
+    update = debouncer.update(3, 100);
+    TEST_ASSERT_FALSE(update.initialized);
+    TEST_ASSERT_EQUAL_HEX16(0, update.changed);
+    TEST_ASSERT_EQUAL_HEX16(3, update.state);
 }
 
 void test_serial_frames_recover_from_noise_and_bad_checksum() {
@@ -284,39 +320,6 @@ void test_serial_frames_recover_from_noise_and_bad_checksum() {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, frame.data, sizeof(payload));
 }
 
-void test_trigger_storage_round_trips_and_rejects_corruption() {
-    piho::TriggerTable source;
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::TriggerUpdateResult::Inserted),
-                            static_cast<uint8_t>(source.upsert(piho::TriggerRule{1, 2, 3})));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::TriggerUpdateResult::Inserted),
-                            static_cast<uint8_t>(source.upsert(piho::TriggerRule{4, 5, 6})));
-
-    uint8_t image[piho::kTriggerStorageCapacity]{};
-    std::size_t imageSize = 0;
-    TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(piho::TriggerStorageError::None),
-        static_cast<uint8_t>(piho::TriggerStorageCodec::encode(source, 42, image, sizeof(image), imageSize)));
-
-    piho::TriggerTable decoded;
-    uint32_t generation = 0;
-    TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(piho::TriggerStorageError::None),
-        static_cast<uint8_t>(piho::TriggerStorageCodec::decode(image, imageSize, decoded, generation)));
-    TEST_ASSERT_EQUAL_UINT32(42, generation);
-    TEST_ASSERT_EQUAL_UINT32(2, decoded.size());
-    const piho::TriggerRule firstExpected{1, 2, 3};
-    const piho::TriggerRule secondExpected{4, 5, 6};
-    TEST_ASSERT_TRUE(decoded.at(0) == firstExpected);
-    TEST_ASSERT_TRUE(decoded.at(1) == secondExpected);
-
-    image[12] ^= 0x01;
-    TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(piho::TriggerStorageError::InvalidChecksum),
-        static_cast<uint8_t>(piho::TriggerStorageCodec::decode(image, imageSize, decoded, generation)));
-    TEST_ASSERT_EQUAL_UINT8(
-        static_cast<uint8_t>(piho::TriggerStorageError::InvalidLength),
-        static_cast<uint8_t>(piho::TriggerStorageCodec::decode(image, imageSize - 1, decoded, generation)));
-}
 
 
 void test_controller_maps_global_outputs_and_avoids_self_echo() {
@@ -436,6 +439,18 @@ void test_controller_routes_graph_updates_through_the_low_priority_path() {
     TEST_ASSERT_FALSE(
         controller.sendGraphUpdateFrame(piho::ProtocolCodec::healthCheck()));
     TEST_ASSERT_EQUAL_UINT32(1, transport.lowPrioritySendCalls);
+
+    piho::CanFrame action{};
+    const piho::ActionRequest localAction{3, 1, 1, 2, 7, true};
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::executeAction(localAction, action));
+    TEST_ASSERT_TRUE(controller.sendActionFrame(action));
+    TEST_ASSERT_EQUAL_UINT32(2, transport.sentCount);
+
+    piho::ActionRequest foreignAction = localAction;
+    foreignAction.sourceDevice = 1;
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::executeAction(foreignAction, action));
+    TEST_ASSERT_FALSE(controller.sendActionFrame(action));
+    TEST_ASSERT_EQUAL_UINT32(2, transport.sentCount);
 }
 }  // namespace
 
@@ -448,11 +463,10 @@ int main() {
     RUN_TEST(test_set_pin_value_is_inside_payload);
     RUN_TEST(test_protocol_rejects_unrelated_and_malformed_frames);
     RUN_TEST(test_input_and_output_state_are_little_endian);
-    RUN_TEST(test_trigger_router_only_toggles_on_rising_edges);
     RUN_TEST(test_debouncer_requires_a_stable_candidate);
     RUN_TEST(test_debouncer_handles_millisecond_wraparound);
+    RUN_TEST(test_debouncer_applies_per_pin_durations_and_rebaseline);
     RUN_TEST(test_serial_frames_recover_from_noise_and_bad_checksum);
-    RUN_TEST(test_trigger_storage_round_trips_and_rejects_corruption);
     RUN_TEST(test_controller_maps_global_outputs_and_avoids_self_echo);
     RUN_TEST(test_controller_dispatches_only_valid_addressed_frames);
     RUN_TEST(test_controller_routes_graph_updates_through_the_low_priority_path);
@@ -461,5 +475,6 @@ int main() {
     runActionRuntimeTests();
     runGraphStoreTests();
     runGraphUpdateTests();
+    runRuntimeIntegrationTests();
     return UNITY_END();
 }

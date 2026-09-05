@@ -53,7 +53,8 @@ bool validGraphState(GraphUpdateState state) {
 }
 
 bool validGraphError(GraphUpdateError error) {
-    return error >= GraphUpdateError::None && error <= GraphUpdateError::Incompatible;
+    return error >= GraphUpdateError::None &&
+           error <= GraphUpdateError::Runtime;
 }
 
 bool validTransferDescriptor(const GraphTransferDescriptor &descriptor) {
@@ -65,7 +66,7 @@ bool validTransferDescriptor(const GraphTransferDescriptor &descriptor) {
 
 bool isGraphNodeStatus(MessageType type) {
     return type >= MessageType::GraphStatusIdentity &&
-           type <= MessageType::GraphTransportErrors;
+           type <= MessageType::GraphExecutorCounters;
 }
 
 bool acceptsBroadcast(MessageType type) {
@@ -90,7 +91,6 @@ uint8_t expectedLength(MessageType type) {
     switch (type) {
         case MessageType::HealthCheck:
         case MessageType::Reset:
-        case MessageType::ClearTriggers:
             return 0;
         case MessageType::InputState:
         case MessageType::OutputState:
@@ -99,9 +99,6 @@ uint8_t expectedLength(MessageType type) {
         case MessageType::GraphAbort:
         case MessageType::GraphStatusRequest:
             return 2;
-        case MessageType::UpsertTrigger:
-        case MessageType::RemoveTrigger:
-            return 3;
         case MessageType::GraphFinish:
             return 4;
         case MessageType::ExecuteAction:
@@ -123,6 +120,10 @@ uint8_t expectedLength(MessageType type) {
         case MessageType::GraphRollbackManifest:
         case MessageType::GraphTransportDrops:
         case MessageType::GraphTransportErrors:
+        case MessageType::GraphRuntimeIdentity:
+        case MessageType::GraphFlowCounters:
+        case MessageType::GraphActionCounters:
+        case MessageType::GraphExecutorCounters:
             return 8;
         case MessageType::GraphChunk:
             return 0xFE;
@@ -138,9 +139,6 @@ bool knownType(uint8_t rawType, MessageType &type) {
         case MessageType::OutputState:
         case MessageType::SetPin:
         case MessageType::SetByte:
-        case MessageType::UpsertTrigger:
-        case MessageType::RemoveTrigger:
-        case MessageType::ClearTriggers:
         case MessageType::ExecuteAction:
         case MessageType::ActionAck:
         case MessageType::GraphBegin:
@@ -164,6 +162,10 @@ bool knownType(uint8_t rawType, MessageType &type) {
         case MessageType::GraphRollbackManifest:
         case MessageType::GraphTransportDrops:
         case MessageType::GraphTransportErrors:
+        case MessageType::GraphRuntimeIdentity:
+        case MessageType::GraphFlowCounters:
+        case MessageType::GraphActionCounters:
+        case MessageType::GraphExecutorCounters:
             type = static_cast<MessageType>(rawType);
             return true;
     }
@@ -230,39 +232,6 @@ bool ProtocolCodec::setByte(uint8_t targetDevice, uint8_t localByte, uint8_t val
     return true;
 }
 
-bool ProtocolCodec::upsertTrigger(uint8_t targetDevice, const TriggerRule &rule,
-                                  CanFrame &frame) {
-    if (!isPhysicalDevice(targetDevice) || !isValid(rule)) {
-        return false;
-    }
-    frame = makeFrame(MessageType::UpsertTrigger, targetDevice);
-    frame.length = 3;
-    frame.data[0] = rule.inputDevice;
-    frame.data[1] = rule.inputPin;
-    frame.data[2] = rule.outputPin;
-    return true;
-}
-
-bool ProtocolCodec::removeTrigger(uint8_t targetDevice, const TriggerRule &rule,
-                                  CanFrame &frame) {
-    if (!isPhysicalDevice(targetDevice) || !isValid(rule)) {
-        return false;
-    }
-    frame = makeFrame(MessageType::RemoveTrigger, targetDevice);
-    frame.length = 3;
-    frame.data[0] = rule.inputDevice;
-    frame.data[1] = rule.inputPin;
-    frame.data[2] = rule.outputPin;
-    return true;
-}
-
-bool ProtocolCodec::clearTriggers(uint8_t targetDevice, CanFrame &frame) {
-    if (!isPhysicalDevice(targetDevice)) {
-        return false;
-    }
-    frame = makeFrame(MessageType::ClearTriggers, targetDevice);
-    return true;
-}
 
 bool ProtocolCodec::executeAction(const ActionRequest &request, CanFrame &frame) {
     if (request.generation == 0 || request.eventToken == 0 ||
@@ -570,6 +539,62 @@ bool ProtocolCodec::graphTransportErrors(uint8_t sourceDevice, uint32_t busError
     encodeUint32(busErrors, frame.data);
     return true;
 }
+
+bool ProtocolCodec::graphRuntimeIdentity(uint8_t sourceDevice,
+                                         const GraphIdentity &identity,
+                                         CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) ||
+        (identity.generation == 0 && identity.checksum != 0)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphRuntimeIdentity, sourceDevice);
+    frame.length = 8;
+    encodeUint32(identity.generation, frame.data);
+    encodeUint32(identity.checksum, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphFlowCounters(uint8_t sourceDevice,
+                                      uint32_t acceptedEvents,
+                                      uint32_t evaluatedActions,
+                                      CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphFlowCounters, sourceDevice);
+    frame.length = 8;
+    encodeUint32(acceptedEvents, frame.data);
+    encodeUint32(evaluatedActions, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphActionCounters(uint8_t sourceDevice,
+                                        uint32_t retries,
+                                        uint32_t rejections,
+                                        CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphActionCounters, sourceDevice);
+    frame.length = 8;
+    encodeUint32(retries, frame.data);
+    encodeUint32(rejections, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphExecutorCounters(uint8_t sourceDevice,
+                                          uint32_t executedActions,
+                                          uint32_t rejectedActions,
+                                          CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphExecutorCounters, sourceDevice);
+    frame.length = 8;
+    encodeUint32(executedActions, frame.data);
+    encodeUint32(rejectedActions, &frame.data[4]);
+    return true;
+}
 DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
     DecodeResult result{};
     if (!frame.extended) {
@@ -631,14 +656,6 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
             }
             result.message.index = frame.data[0];
             result.message.value = frame.data[1];
-            break;
-        case MessageType::UpsertTrigger:
-        case MessageType::RemoveTrigger:
-            result.message.trigger = TriggerRule{frame.data[0], frame.data[1], frame.data[2]};
-            if (!isValid(result.message.trigger)) {
-                result.error = ProtocolError::InvalidPayload;
-                return result;
-            }
             break;
         case MessageType::ExecuteAction: {
             const uint32_t packed = decodeUint32(&frame.data[4]);
@@ -799,6 +816,7 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
         case MessageType::GraphActiveIdentity:
         case MessageType::GraphStagedIdentity:
         case MessageType::GraphRollbackIdentity:
+        case MessageType::GraphRuntimeIdentity:
             node.identity.generation = decodeUint32(frame.data);
             node.identity.checksum = decodeUint32(&frame.data[4]);
             if (node.identity.generation == 0 && node.identity.checksum != 0) {
@@ -830,9 +848,20 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
                 return result;
             }
             break;
+        case MessageType::GraphFlowCounters:
+            node.flowAcceptedEvents = decodeUint32(frame.data);
+            node.flowEvaluatedActions = decodeUint32(&frame.data[4]);
+            break;
+        case MessageType::GraphActionCounters:
+            node.actionRetries = decodeUint32(frame.data);
+            node.actionRejections = decodeUint32(&frame.data[4]);
+            break;
+        case MessageType::GraphExecutorCounters:
+            node.executorExecutedActions = decodeUint32(frame.data);
+            node.executorRejectedActions = decodeUint32(&frame.data[4]);
+            break;
         case MessageType::HealthCheck:
         case MessageType::Reset:
-        case MessageType::ClearTriggers:
             break;
     }
 

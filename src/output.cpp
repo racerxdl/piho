@@ -63,9 +63,4 @@ void setOutputByte(uint8_t localByte, uint8_t value) {
     writeOutputs();
 }
 
-void toggleOutputs(uint16_t mask) {
-    logicalState = static_cast<uint16_t>(logicalState ^ mask);
-    writeOutputs();
-}
-
 #endif

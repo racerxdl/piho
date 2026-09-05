@@ -88,7 +88,7 @@ Delayed invocations are volatile across board reset. Format 1 does not write tim
 
 ## Delivery and acknowledgement
 
-An input/executor board keeps at most 32 action invocations awaiting application acknowledgement. A request has one immutable event token across all retries. Event tokens are nonzero 17-bit values (`1..131071`) and wrap to 1; bounded CAN throughput makes the wrap interval longer than the output deduplication window. The request preserves the full 32-bit graph generation.
+An input board keeps at most 32 action invocations awaiting application acknowledgement. A request has one immutable event token across all retries. Event tokens are nonzero 17-bit values (`1..131071`) and wrap to 1; bounded CAN throughput makes the wrap interval longer than the output deduplication window. The request preserves the full 32-bit graph generation.
 
 `ExecuteAction` and `ActionAck` each use one classic-CAN frame with an eight-byte payload. The target or acknowledgement destination is in the extended identifier. The payload carries the generation and a packed action ID, event token, source or output device, and source value. Message types 10 and 11 are reserved for these runtime frames; graph-transfer types begin at 16, so runtime actions win CAN arbitration when their common protocol header is equal.
 
@@ -110,11 +110,13 @@ The active graph is immutable. An update is written and validated in an inactive
 Activation occurs at one main-loop boundary:
 
 1. Stop accepting new evaluations from the old graph.
-2. Preserve already transmitted actions; cancel unsent delayed invocations from the old generation.
-3. Load the new local execution section.
+2. Cancel queued/delayed invocations and pending retries from the old generation.
+3. Load and validate the new role-specific execution section in an inactive runtime buffer.
 4. Establish current input levels as the new baseline.
-5. Reset graph-local event and timer state.
-6. Resume evaluation under the new generation.
+5. Reset graph-local event, retry, deduplication, and pulse-timer state without changing output levels.
+6. Swap to the new runtime section and resume under the new generation.
+
+If role-specific loading or activation fails after replacing an existing graph, storage swaps back to the prior active graph and reloads its runtime section before reporting a typed runtime rejection. Without a recoverable prior graph, the stored/runtime mismatch remains explicit and autonomous execution stays disabled. A node reports stored and loaded runtime identities separately; network activation is complete only when both identities match the target on every expected board.
 
 Every board persists the complete image in three LittleFS graph slots. Three slots are required to keep an immutable active graph and its rollback generation while a third generation is received. Chunks are limited to 256 bytes; CRC32 is accumulated while writing, and read-back validation uses the bounded `GraphImageSource` interface rather than allocating a complete-image buffer.
 
@@ -128,11 +130,11 @@ The USB-connected node is the gateway for one bounded update session. `GraphBegi
 
 Image transport is stop-and-wait: each `GraphChunk` contains the transfer ID, a 16-bit sequence, and one to four bytes. The gateway advances only after every expected device reports the next sequence. An identical retry is idempotent; a conflicting duplicate, missing sequence, or out-of-order sequence is rejected. `GraphFinish` is accepted only at the exact calculated sequence count. Each board then performs independent bounded image validation and reports `staged` only when the identity and graph device bitmap match the announcement.
 
-Each node reports status as an identity frame and a progress frame. The gateway combines only matching transfer ID, generation, and checksum observations into ready, progressed, staged, rejected, active, rollback, and missing device bitmaps. It refuses activation unless the staged bitmap equals the announced expected-device bitmap and no expected board rejected the image.
+Each node reports update identity/progress plus inventory frames for capabilities, storage identities/manifests, transport health, loaded runtime identity, source-flow counters, action retry/rejection counters, and output-executor counters. The gateway combines only matching transfer ID, generation, and checksum observations into ready, progressed, staged, rejected, active, rollback, and missing device bitmaps. It refuses activation unless the staged bitmap equals the announced expected-device bitmap and no expected board rejected the image.
 
-Activation and rollback carry generation plus checksum and are idempotent. The gateway retransmits them every 50 milliseconds until all expected boards report the requested identity; a board that missed an earlier broadcast therefore converges. Begin, chunk, finish, activation, rollback, and status retry state is fixed-size. Five seconds without progress rejects the session and discards only the receiving or staged candidate. Explicit abort has the same isolation property.
+Activation and rollback carry generation plus checksum and are idempotent. The gateway retransmits them every 50 milliseconds until all expected boards report the requested stored and loaded runtime identity; a board that missed an earlier broadcast therefore converges. Begin, chunk, finish, activation, rollback, and status retry state is fixed-size. Five seconds without progress rejects the session and discards only the receiving or staged candidate. Explicit abort has the same isolation property.
 
-Graph-transfer traffic uses CAN message types 16 through 27 and a distinct low-priority software queue. Runtime action/acknowledgement frames and health traffic are always dequeued first and also have lower CAN identifiers, so deployment cannot sit ahead of runtime work.
+Graph-transfer and inventory traffic uses CAN message types 16 through 40 and a distinct low-priority software queue. Runtime action/acknowledgement frames and health traffic are always dequeued first and also have lower CAN identifiers, so deployment cannot sit ahead of runtime work.
 
 Outputs are not reset merely because a graph activates. They change only through an explicit action or normal safe boot initialization.
 
@@ -168,6 +170,8 @@ These are protocol and runtime limits, not dynamically allocated targets:
 | Pulse timers per output board | 16 |
 | Debounce interval | 0..5000 ms |
 | Action delay or pulse duration | 0..86400000 ms |
+| Firmware RAM budget per variant | 65,536 bytes |
+| Firmware flash budget per variant | 262,144 bytes |
 | Action emissions serviced per loop | 8 |
 
 The compiler must fail when a graph exceeds any limit. Firmware must not truncate it.
