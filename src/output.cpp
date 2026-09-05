@@ -1,48 +1,71 @@
-#include <Arduino.h>
-#include "piho.h"
-#include "config.h"
 #include "io.h"
 
+#include <Arduino.h>
+
+#include "config.h"
+#include "piho/addressing.h"
+
 #ifndef IS_INPUT_DEVICE
+namespace {
 
-uint32_t lastValue = 0;
+uint16_t logicalState = 0;
 
-void initOutput() {
-    gpio_set_dir_out_masked(DATA_MASK);
-    for (int i = 0; i < 16; i++) {
-        pinMode(i, OUTPUT);
+uint16_t physicalState(uint16_t state) {
+    return OUTPUT_ACTIVE_LOW ? static_cast<uint16_t>(~state) : state;
+}
+
+void writeOutputs() {
+    const uint32_t shifted = static_cast<uint32_t>(physicalState(logicalState)) << DATA_SHIFT;
+    gpio_put_masked(DATA_MASK, shifted & DATA_MASK);
+}
+
+}  // namespace
+
+void initializeOutputs() {
+    const bool inactiveLevel = OUTPUT_ACTIVE_LOW;
+    for (uint8_t pin = 0; pin < piho::kPinsPerDevice; ++pin) {
+        const uint8_t gpio = static_cast<uint8_t>(DATA_SHIFT + pin);
+        gpio_init(gpio);
+        gpio_put(gpio, inactiveLevel);
+        gpio_set_dir(gpio, GPIO_OUT);
     }
+    logicalState = 0;
+    writeOutputs();
 }
 
-void togglePin(uint8_t pin) {
-    if (BIT(lastValue, pin)) {
-        CLRBIT(lastValue, pin);
-    } else {
-        SETBIT(lastValue, pin);
+uint16_t outputState() {
+    return logicalState;
+}
+
+void setOutputState(uint16_t state) {
+    logicalState = state;
+    writeOutputs();
+}
+
+void setOutputPin(uint8_t localPin, bool value) {
+    if (localPin >= piho::kPinsPerDevice) {
+        return;
     }
-    setGPIOValue(lastValue);
+    const uint16_t mask = static_cast<uint16_t>(1u << localPin);
+    logicalState = value ? static_cast<uint16_t>(logicalState | mask)
+                         : static_cast<uint16_t>(logicalState & static_cast<uint16_t>(~mask));
+    writeOutputs();
 }
 
-void setGPIOValue(uint32_t v) {
-    lastValue = v;
-    gpio_put_masked(DATA_MASK, lastValue);
-}
-
-void setGPIO(int byteNum, uint8_t value) {
-    if (byteNum) {
-        lastValue = (lastValue & 0x00FF) | static_cast<uint16_t>(value) << 8;
-    } else {
-        lastValue = (lastValue & 0xFF00) | value;
+void setOutputByte(uint8_t localByte, uint8_t value) {
+    if (localByte >= piho::kBytesPerDevice) {
+        return;
     }
-    gpio_put_masked(DATA_MASK, lastValue);
+    const uint8_t shift = static_cast<uint8_t>(localByte * 8);
+    const uint16_t mask = static_cast<uint16_t>(0xFFu << shift);
+    logicalState = static_cast<uint16_t>((logicalState & static_cast<uint16_t>(~mask)) |
+                                         static_cast<uint16_t>(static_cast<uint16_t>(value) << shift));
+    writeOutputs();
 }
 
-void setPin(uint8_t pin, uint8_t val) {
-    if (val) {
-        lastValue = SETBIT(lastValue, pin);
-    } else {
-        lastValue = CLRBIT(lastValue, pin);
-    }
-    gpio_put_masked(DATA_MASK, lastValue);
+void toggleOutputs(uint16_t mask) {
+    logicalState = static_cast<uint16_t>(logicalState ^ mask);
+    writeOutputs();
 }
+
 #endif

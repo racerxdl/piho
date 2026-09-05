@@ -1,0 +1,11 @@
+{
+  "name": "PihoCore",
+  "version": "1.0.0",
+  "description": "Platform-neutral protocol and state logic for Piho firmware",
+  "license": "Apache-2.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src"
+  }
+}

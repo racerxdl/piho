@@ -1,31 +1,29 @@
 #pragma once
 
-#define CAN_RXD 17
-#define CAN_TXD 16
-#define CAN_BAUD 250000
+#define CAN_RXD 17u
+#define CAN_TXD 16u
+#define CAN_BAUD 250000u
 
-#define LED_ACT 18
-#define LED_HC  19
-#define LED_ERR 20
+#define LED_ACT 18u
+#define LED_HC 19u
+#define LED_ERR 20u
 
-#define DATA_MASK 0xFFFF
-#define DATA_SHIFT 0
+#define DATA_MASK 0xFFFFu
+#define DATA_SHIFT 0u
 
-#define ADDR_BIT_0 21
-#define ADDR_BIT_1 22
-#define ADDR_BIT_2 26
-#define ADDR_BIT_3 27
-#define ADDR_BIT_4 28
+#define ADDR_BIT_0 21u
+#define ADDR_BIT_1 22u
+#define ADDR_BIT_2 26u
+#define ADDR_BIT_3 27u
+#define ADDR_BIT_4 28u
 
-#define DEBOUNCE_TIME 500
-#define PIHO_QUEUE_MAX_ITEMS 32
-#define HC_LED_TIMEOUT 50
-#define ERR_LED_TIMEOUT 50
-#define IO_CHECK_INTERVAL 5
-#define MAX_UART_BYTES 128
+#define DEBOUNCE_TIME_MS 500u
+#define IO_CHECK_INTERVAL_MS 5u
+#define PIHO_QUEUE_MAX_ITEMS 32u
+#define HC_LED_TIMEOUT_MS 50u
+#define ERR_LED_TIMEOUT_MS 50u
+#define RESET_DELAY_MS 100u
+#define MAX_UART_BYTES_PER_POLL 32u
 
-
-#define BIT(v, n) (v & (1 << n))
-#define SETBIT(v, n) (v | (1 << n))
-#define CLRBIT(v, n) (v & ~(1 << n))
-
+#define INPUT_ACTIVE_LOW 1
+#define OUTPUT_ACTIVE_LOW 1

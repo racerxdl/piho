@@ -1,144 +1,131 @@
 #include "storage.h"
 
-#include <vector>
+#include <Arduino.h>
+#include <LittleFS.h>
 
-Storage config;
+#include <cstddef>
+#include <cstdint>
 
-#define NULL_TRIGGER -1
+#include "piho/trigger_storage_codec.h"
 
-struct TriggerConfig {
-    uint8_t outputId;
-    int16_t inputId;
-    uint8_t pin;
+TriggerStorage triggerStorage;
+piho::TriggerTable triggerRules;
 
-    Triggers trigger;
+namespace {
 
-    TriggerConfig() : inputId(NULL_TRIGGER) {}
-};
+constexpr char kSlotA[] = "/triggers.a";
+constexpr char kSlotB[] = "/triggers.b";
+constexpr char kLegacyPath[] = "/triggers.bin";
 
-Storage::Storage() {
-}
-
-void Storage::begin() {
-    LittleFS.begin();
-    fs::FSInfo fsinfo;
-    LittleFS.info(fsinfo);
-    Serial.printf("( ALL) FS Total Bytes: %d\r\n", fsinfo.totalBytes);
-    Serial.printf("( ALL) FS Used Bytes: %d\r\n", fsinfo.usedBytes);
-    Serial.printf("( ALL) FS Block Size: %d\r\n", fsinfo.blockSize);
-    Serial.printf("( ALL) FS Page Size: %d\r\n", fsinfo.pageSize);
-
-    Load();
-}
-
-void Storage::AddMap(uint8_t inputDevice, uint8_t outputDevice, uint8_t pin, Triggers triggers) {
-    if (deviceMaps.count(inputDevice) == 0) {
-        deviceMaps[inputDevice] = DeviceMap();
+bool tablesEqual(const piho::TriggerTable &lhs, const piho::TriggerTable &rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
     }
-    auto &map = deviceMaps[outputDevice];
-    if (map.ioMaps.count(outputDevice) == 0) {
-        map.ioMaps[outputDevice] = IOMap();
-    }
-    auto &io = map.ioMaps[outputDevice];
-    if (io.triggers.count(pin) == 0) {
-        io.triggers[pin] = Triggers();
-    }
-    auto &trigger = io.triggers[pin];
-    for (int i = 0; i < MAX_TRIGGERS; i++) {
-        trigger.v[i] = triggers.v[i];
-    }
-    Serial.printf("( ALL) Added trigger from IDEV=%d to ODEV=%d => ", inputDevice, outputDevice);
-    Serial.printf("Pin %d -> ", pin);
-    for (int i = 0; i < MAX_TRIGGERS; i++) {
-        if (triggers.v[i] != NO_PIN) {
-            Serial.printf("%d ", triggers.v[i]);
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+        if (!(lhs.at(index) == rhs.at(index))) {
+            return false;
         }
     }
-    Serial.printf("\r\n");
+    return true;
 }
 
-void Storage::Load() {
-    printf("( ALL) Loading configuration from triggers.bin");
-    File f = LittleFS.open("/triggers.bin", "r");
-    if (!f) {
-        Serial.println("( ALL) No config file to load.");
-        Serial.println("( ALL) Creating default config.");
-        Save();
-        return;
+bool readSlot(const char *path, piho::TriggerTable &rules, uint32_t &generation) {
+    File file = LittleFS.open(path, "r");
+    if (!file) {
+        return false;
     }
 
-    TriggerConfig cfg;
-    int readBytes = f.read((uint8_t *)&cfg, sizeof(TriggerConfig));
-    int cfgRead = 0;
-    while (cfg.inputId != NULL_TRIGGER && readBytes > 0) {
-        AddMap((uint8_t)cfg.inputId, cfg.outputId, cfg.pin, cfg.trigger);
-        readBytes = f.read((uint8_t *)&cfg, sizeof(TriggerConfig));
-        cfgRead++;
+    const std::size_t size = file.size();
+    if (size > piho::kTriggerStorageCapacity) {
+        file.close();
+        return false;
     }
-    Serial.printf("( ALL) Loaded %d pin config.\r\n", cfgRead);
 
-    f.close();
+    uint8_t image[piho::kTriggerStorageCapacity]{};
+    const bool read = file.read(image, size) == static_cast<int>(size);
+    file.close();
+    return read && piho::TriggerStorageCodec::decode(image, size, rules, generation) ==
+                       piho::TriggerStorageError::None;
 }
 
-void Storage::Save() {
-    File f = LittleFS.open("/triggers.bin", "w");
-    if (!f) {
-        Serial.println("( ERR) Cannot write file cfg.bin");
-        return;
+bool writeSlot(const char *path, const piho::TriggerTable &rules, uint32_t generation) {
+    uint8_t image[piho::kTriggerStorageCapacity]{};
+    std::size_t size = 0;
+    if (piho::TriggerStorageCodec::encode(rules, generation, image, sizeof(image), size) !=
+        piho::TriggerStorageError::None) {
+        return false;
     }
 
-    std::vector<TriggerConfig> triggers;
+    File file = LittleFS.open(path, "w");
+    if (!file) {
+        return false;
+    }
+    const bool written = file.write(image, size) == size;
+    file.flush();
+    file.close();
+    return written;
+}
 
-    for (auto const &map : deviceMaps) {
-        auto outputDeviceId = map.first;
-        for (auto const &io : map.second.ioMaps) {
-            auto inputDeviceId = io.first;
-            for (auto const &trig : io.second.triggers) {
-                auto t = TriggerConfig{};
+bool generationIsNewer(uint32_t candidate, uint32_t reference) {
+    return static_cast<int32_t>(candidate - reference) > 0;
+}
 
-                t.inputId = inputDeviceId;
-                t.outputId = outputDeviceId;
-                for (int i = 0; i < MAX_TRIGGERS; i++) {
-                    t.trigger.v[i] = trig.second.v[i];
-                }
-                t.pin = trig.first;
-                triggers.push_back(t);
-            }
+}  // namespace
+
+bool TriggerStorage::begin(piho::TriggerTable &rules) {
+    mounted_ = LittleFS.begin();
+    if (!mounted_) {
+        return false;
+    }
+
+    piho::TriggerTable slotA;
+    piho::TriggerTable slotB;
+    uint32_t generationA = 0;
+    uint32_t generationB = 0;
+    const bool validA = readSlot(kSlotA, slotA, generationA);
+    const bool validB = readSlot(kSlotB, slotB, generationB);
+
+    if (validA && (!validB || !generationIsNewer(generationB, generationA))) {
+        rules = slotA;
+        generation_ = generationA;
+        activeSlot_ = 0;
+    } else if (validB) {
+        rules = slotB;
+        generation_ = generationB;
+        activeSlot_ = 1;
+    } else {
+        rules.clear();
+        generation_ = 0;
+        activeSlot_ = 0xFF;
+        if (!save(rules)) {
+            return false;
         }
     }
 
-    triggers.push_back(TriggerConfig());
-
-    for (auto const &t: triggers) {
-        f.write((uint8_t *)&t, sizeof(TriggerConfig));
-    }
-
-    Serial.printf("( ALL) Saved %d triggers\r\n", triggers.size()-1);
-
-    f.close();
-    Serial.println("( ALL) Configuration saved!");
+    LittleFS.remove(kLegacyPath);
+    return true;
 }
 
-void Storage::GetTriggers(uint8_t inputDevice, uint8_t outputDevice, uint8_t pin, Triggers &triggers) {
-    for (int i = 0; i < MAX_TRIGGERS; i++) {
-        triggers.v[i] = NO_PIN;
+bool TriggerStorage::save(const piho::TriggerTable &rules) {
+    if (!mounted_) {
+        return false;
     }
 
-    if (deviceMaps.count(inputDevice) == 0) {
-        return;
-    }
-    auto p = deviceMaps[inputDevice];
-
-    if (p.ioMaps.count(outputDevice) == 0) {
-        return;
+    const uint8_t nextSlot = activeSlot_ == 0 ? 1 : 0;
+    const char *path = nextSlot == 0 ? kSlotA : kSlotB;
+    const uint32_t nextGeneration = generation_ + 1;
+    if (!writeSlot(path, rules, nextGeneration)) {
+        return false;
     }
 
-    auto m = p.ioMaps[outputDevice];
-    if (m.triggers.count(pin) == 0) {
-        return;
+    piho::TriggerTable verified;
+    uint32_t verifiedGeneration = 0;
+    if (!readSlot(path, verified, verifiedGeneration) || verifiedGeneration != nextGeneration ||
+        !tablesEqual(rules, verified)) {
+        return false;
     }
-    auto t = m.triggers[pin];
-    for (int i = 0; i < MAX_TRIGGERS; i++) {
-        triggers.v[i] = t.v[i];
-    }
+
+    generation_ = nextGeneration;
+    activeSlot_ = nextSlot;
+    return true;
 }

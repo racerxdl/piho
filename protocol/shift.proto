@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+message Empty {
+}
+
+message IndexedValue {
+  uint32 index = 1;
+  uint32 value = 2;
+}
+
+message ResetCommand {
+  uint32 device = 1;
+  bool broadcast = 2;
+}
+
+message TriggerCommand {
+  uint32 input_device = 1;
+  uint32 input_pin = 2;
+  uint32 output_device = 3;
+  uint32 output_pin = 4;
+}
+
+message DeviceCommand {
+  uint32 device = 1;
+}
+
+message HostCommand {
+  oneof command {
+    Empty health_check = 1;
+    IndexedValue set_pin = 2;
+    IndexedValue set_byte = 3;
+    ResetCommand reset = 4;
+    Empty status = 5;
+    TriggerCommand upsert_trigger = 6;
+    TriggerCommand remove_trigger = 7;
+    DeviceCommand clear_triggers = 8;
+  }
+}
+
+message InputStateEvent {
+  uint32 device = 1;
+  uint32 state = 2;
+}
+
+message StatusEvent {
+  uint32 device = 1;
+  bool input_device = 2;
+  uint32 gpio_state = 3;
+  uint32 trigger_count = 4;
+  uint32 rx_dropped = 5;
+  uint32 tx_dropped = 6;
+  uint32 bus_errors = 7;
+}
+
+message ErrorEvent {
+  enum Code {
+    UNKNOWN = 0;
+    INVALID_FRAME = 1;
+    INVALID_COMMAND = 2;
+    OUT_OF_RANGE = 3;
+    TRANSPORT = 4;
+    STORAGE = 5;
+    TRIGGER_TABLE_FULL = 6;
+  }
+
+  Code code = 1;
+}
+
+message AckEvent {
+  enum Operation {
+    NONE = 0;
+    HEALTH_CHECK = 1;
+    SET_PIN = 2;
+    SET_BYTE = 3;
+    RESET = 4;
+    UPSERT_TRIGGER = 5;
+    REMOVE_TRIGGER = 6;
+    CLEAR_TRIGGERS = 7;
+  }
+
+  Operation operation = 1;
+  bool accepted = 2;
+}
+
+message DeviceEvent {
+  oneof event {
+    InputStateEvent input_state = 1;
+    StatusEvent status = 2;
+    ErrorEvent error = 3;
+    AckEvent ack = 4;
+  }
+}

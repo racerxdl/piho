@@ -1,16 +1,16 @@
 #pragma once
 
-#include "config.h"
 #include <cstdint>
 
 #ifdef IS_INPUT_DEVICE
-void initInputs();
-uint16_t readGPIO();
-void reportGPIO(uint8_t myId, uint16_t gpio);
+void initializeInputs();
+bool sampleInputs(uint32_t nowMilliseconds, uint16_t &state);
+uint16_t inputState();
 #else
-void initOutput();
-void setGPIOValue(uint32_t v);
-void togglePin(uint8_t pin);
-void setGPIO(int byteNum, uint8_t value);
-void setPin(uint8_t pin, uint8_t val);
+void initializeOutputs();
+uint16_t outputState();
+void setOutputState(uint16_t state);
+void setOutputPin(uint8_t localPin, bool value);
+void setOutputByte(uint8_t localByte, uint8_t value);
+void toggleOutputs(uint16_t mask);
 #endif
