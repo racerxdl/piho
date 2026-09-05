@@ -225,7 +225,14 @@ export function compileGraphModel(document: ValidatedFlowDocument): CompiledGrap
   const inputs = [...compiledInputsByName.values()].sort(
     (left, right) => left.device - right.device || left.id - right.id,
   );
-  routes.sort((left, right) => left.ownerDevice - right.ownerDevice || left.id - right.id);
+  routes.sort(
+    (left, right) =>
+      left.ownerDevice - right.ownerDevice ||
+      left.inputId - right.inputId ||
+      EDGE_ORDER[left.edge] - EDGE_ORDER[right.edge] ||
+      left.flowId - right.flowId ||
+      left.id - right.id,
+  );
   const actions = [...compiledActionsByName.values()].sort(
     (left, right) => left.targetDevice - right.targetDevice || left.id - right.id,
   );

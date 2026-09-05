@@ -74,7 +74,7 @@ The compiler treats object declaration order, trigger order, and a flow's action
 4. Triggers in a flow are ordered by input name, then `rising`, `falling`, `changed`.
 5. Action references in a route are ordered by action ID.
 6. Device records are ordered by numeric device ID.
-7. Inputs, routes, and actions are grouped by their owning device ID, then ordered by assigned ID.
+7. Inputs and actions are grouped by owning device ID, then ordered by assigned ID. Routes are ordered by owner device, input ID, edge code, flow ID, then route ID.
 
 A route ID identifies one compiled source node: one flow, input, and edge. Route IDs are assigned before device grouping, using the canonical flow and trigger order. These rules make semantically identical source documents produce byte-identical images and checksums.
 
@@ -172,6 +172,12 @@ Each action record is 16 bytes.
 | 6 | 2 | Reserved, zero |
 | 8 | 4 | Dispatch delay in milliseconds |
 | 12 | 4 | Pulse duration in milliseconds; zero for other operations |
+
+## Firmware decoding
+
+`PihoCore` consumes the image through `GraphImageSource`, a bounded random-access callback over immutable storage or memory. Validation reads at most 64 bytes per call, computes CRC incrementally, decodes every field explicitly, and never allocates from the heap or copies the complete image.
+
+`GraphImageCodec::validate` publishes a `GraphManifest` only after the complete image passes validation. `loadInputSection` copies one input board's inputs, routes, action references, and referenced action records into fixed-capacity staging storage. `loadOutputSection` copies only the actions targeting one output board. The caller replaces its active local section only after a loader returns `GraphImageError::None`.
 
 ## Capacity validation
 

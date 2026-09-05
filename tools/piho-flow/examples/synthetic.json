@@ -49,9 +49,27 @@
       "device": "utility_relays",
       "pin": 6,
       "operation": "copy_source"
+    },
+    "pulse_utility_indicator": {
+      "device": "utility_relays",
+      "pin": 9,
+      "operation": "pulse",
+      "delayMs": 250,
+      "durationMs": 1000
     }
   },
   "flows": {
+    "alternate_entry_action": {
+      "when": [
+        {
+          "input": "entry_button",
+          "edge": "falling"
+        }
+      ],
+      "actions": [
+        "pulse_utility_indicator"
+      ]
+    },
     "entry_lighting": {
       "when": [
         {

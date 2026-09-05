@@ -1,5 +1,7 @@
 #include "piho/trigger_storage_codec.h"
 
+#include "piho/crc32.h"
+
 namespace piho {
 namespace {
 
@@ -8,27 +10,6 @@ constexpr uint8_t kFormatVersion = 1;
 constexpr uint8_t kRecordSize = 3;
 constexpr std::size_t kHeaderSize = 12;
 constexpr std::size_t kChecksumSize = 4;
-
-class Crc32 {
-   public:
-    void add(uint8_t byte) {
-        value_ ^= byte;
-        for (uint8_t bit = 0; bit < 8; ++bit) {
-            value_ = (value_ & 1u) != 0 ? (value_ >> 1) ^ 0xEDB88320u : value_ >> 1;
-        }
-    }
-
-    void add(const uint8_t *data, std::size_t size) {
-        for (std::size_t index = 0; index < size; ++index) {
-            add(data[index]);
-        }
-    }
-
-    uint32_t value() const { return ~value_; }
-
-   private:
-    uint32_t value_ = 0xFFFFFFFFu;
-};
 
 void encodeUint16(uint16_t value, uint8_t *output) {
     output[0] = static_cast<uint8_t>(value & 0xFFu);

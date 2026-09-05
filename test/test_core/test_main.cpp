@@ -11,6 +11,8 @@
 #include "piho/trigger_table.h"
 #include "piho/trigger_storage_codec.h"
 
+void runGraphImageTests();
+
 namespace {
 
 class FakeTransport final : public CanTransport {
@@ -400,5 +402,6 @@ int main() {
     RUN_TEST(test_trigger_storage_round_trips_and_rejects_corruption);
     RUN_TEST(test_controller_maps_global_outputs_and_avoids_self_echo);
     RUN_TEST(test_controller_dispatches_only_valid_addressed_frames);
+    runGraphImageTests();
     return UNITY_END();
 }

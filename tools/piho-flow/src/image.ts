@@ -531,6 +531,13 @@ export function decodeGraphImage(bytes: Uint8Array): CompiledGraph {
     const edge = decodeEdge(view.getUint8(offset + 9));
     const routeActionCount = view.getUint8(offset + 10);
     const previousRoute = routes.at(-1);
+    const routeOrder = previousRoute === undefined
+      ? -1
+      : previousRoute.ownerDevice - ownerDevice ||
+        previousRoute.inputId - inputId ||
+        EDGE_CODE[previousRoute.edge] - EDGE_CODE[edge] ||
+        previousRoute.flowId - flowId ||
+        previousRoute.id - id;
     if (
       id === 0 ||
       routeIds.has(id) ||
@@ -542,9 +549,7 @@ export function decodeGraphImage(bytes: Uint8Array): CompiledGraph {
       routeActionCount > GRAPH_LIMITS.actionsPerEvent ||
       firstReference !== expectedReferenceStart ||
       firstReference + routeActionCount > referenceCount ||
-      (previousRoute !== undefined &&
-        (previousRoute.ownerDevice > ownerDevice ||
-          (previousRoute.ownerDevice === ownerDevice && previousRoute.id >= id))) ||
+      routeOrder >= 0 ||
       view.getUint8(offset + 11) !== 0
     ) {
       imageError(`invalid route record ${index}`);
