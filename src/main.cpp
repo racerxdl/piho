@@ -23,6 +23,11 @@ piho::GraphUpdateParticipant graphUpdateParticipant;
 piho::GraphUpdateCoordinator graphUpdateCoordinator;
 uint32_t lastGraphUpdateRevision = 0;
 #ifdef IS_INPUT_DEVICE
+constexpr piho::GraphDeviceRole kLocalGraphRole = piho::GraphDeviceRole::Input;
+#else
+constexpr piho::GraphDeviceRole kLocalGraphRole = piho::GraphDeviceRole::Output;
+#endif
+#ifdef IS_INPUT_DEVICE
 uint32_t lastInputCheck = 0;
 #else
 piho::TriggerRouter triggerRouter;
@@ -112,10 +117,31 @@ bool writeGraphUpdateFrame(void *, const piho::CanFrame &frame) {
     return controller.sendGraphUpdateFrame(frame);
 }
 
+void publishTransportStatus() {
+    const CanTransportStats stats = controller.transportStats();
+    piho::CanFrame drops{};
+    piho::CanFrame errors{};
+    if (piho::ProtocolCodec::graphTransportDrops(
+            controller.deviceId(), stats.rxDropped, stats.txDropped, drops)) {
+        controller.sendGraphUpdateFrame(drops);
+    }
+    if (piho::ProtocolCodec::graphTransportErrors(
+            controller.deviceId(), stats.busErrors, errors)) {
+        controller.sendGraphUpdateFrame(errors);
+    }
+}
+
 void onGraphUpdate(void *, const piho::ProtocolMessage &message) {
     const uint32_t now = millis();
     graphUpdateParticipant.handle(message, now);
     graphUpdateCoordinator.handle(message, now);
+    if (message.type == piho::MessageType::GraphStatusRequest) {
+        publishTransportStatus();
+    }
+    if (message.type >= piho::MessageType::GraphNodeCapabilities &&
+        message.type <= piho::MessageType::GraphTransportErrors) {
+        sendGraphNodeStatusEvent(message);
+    }
 }
 
 void onControllerError(void *, ControllerError error) {
@@ -190,8 +216,8 @@ void setup() {
         reportApplicationError(DeviceErrorCode::Transport);
     }
     graphUpdateCoordinator.configure(writeGraphUpdateFrame);
-    if (!graphUpdateParticipant.begin(deviceId, graphStore, writeGraphUpdateFrame,
-                                      nullptr, millis())) {
+    if (!graphUpdateParticipant.begin(deviceId, kLocalGraphRole, graphStore,
+                                      writeGraphUpdateFrame, nullptr, millis())) {
         reportApplicationError(DeviceErrorCode::Storage);
     }
 

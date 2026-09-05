@@ -54,6 +54,7 @@ message GraphTransferCommand {
 message GraphIdentityCommand {
   uint32 generation = 1;
   uint32 checksum = 2;
+  uint32 expected_devices = 3;
 }
 
 message GraphStatusCommand {
@@ -120,6 +121,79 @@ enum GraphUpdateError {
   GRAPH_UPDATE_ERROR_NOT_READY = 11;
   GRAPH_UPDATE_ERROR_SEND_FAILED = 12;
   GRAPH_UPDATE_ERROR_ABORTED = 13;
+  GRAPH_UPDATE_ERROR_WRONG_ROLE = 14;
+  GRAPH_UPDATE_ERROR_INCOMPATIBLE = 15;
+}
+
+enum DeviceRole {
+  DEVICE_ROLE_UNSPECIFIED = 0;
+  DEVICE_ROLE_INPUT = 1;
+  DEVICE_ROLE_OUTPUT = 2;
+}
+
+enum GraphStoreState {
+  GRAPH_STORE_STATE_EMPTY = 0;
+  GRAPH_STORE_STATE_RECEIVING = 1;
+  GRAPH_STORE_STATE_STAGED = 2;
+  GRAPH_STORE_STATE_ACTIVE = 3;
+  GRAPH_STORE_STATE_INVALID = 4;
+  GRAPH_STORE_STATE_ROLLBACK = 5;
+}
+
+enum GraphStoreError {
+  GRAPH_STORE_ERROR_NONE = 0;
+  GRAPH_STORE_ERROR_MOUNT = 1;
+  GRAPH_STORE_ERROR_METADATA_READ = 2;
+  GRAPH_STORE_ERROR_METADATA_CORRUPT = 3;
+  GRAPH_STORE_ERROR_METADATA_WRITE = 4;
+  GRAPH_STORE_ERROR_INVALID_ARGUMENT = 5;
+  GRAPH_STORE_ERROR_BUSY = 6;
+  GRAPH_STORE_ERROR_NO_SLOT = 7;
+  GRAPH_STORE_ERROR_SLOT_OPEN = 8;
+  GRAPH_STORE_ERROR_SLOT_WRITE = 9;
+  GRAPH_STORE_ERROR_SLOT_CLOSE = 10;
+  GRAPH_STORE_ERROR_SLOT_READ = 11;
+  GRAPH_STORE_ERROR_INVALID_LENGTH = 12;
+  GRAPH_STORE_ERROR_INVALID_CHECKSUM = 13;
+  GRAPH_STORE_ERROR_INVALID_IMAGE = 14;
+  GRAPH_STORE_ERROR_INTERRUPTED = 15;
+  GRAPH_STORE_ERROR_NO_STAGED_GRAPH = 16;
+  GRAPH_STORE_ERROR_NO_ROLLBACK_GRAPH = 17;
+  GRAPH_STORE_ERROR_NO_ACTIVE_GRAPH = 18;
+}
+
+enum GraphNodeStatusPart {
+  GRAPH_NODE_STATUS_PART_UNSPECIFIED = 0;
+  GRAPH_NODE_STATUS_PART_CAPABILITIES = 1;
+  GRAPH_NODE_STATUS_PART_STATE = 2;
+  GRAPH_NODE_STATUS_PART_ACTIVE = 3;
+  GRAPH_NODE_STATUS_PART_STAGED = 4;
+  GRAPH_NODE_STATUS_PART_ROLLBACK = 5;
+  GRAPH_NODE_STATUS_PART_MANIFESTS = 6;
+  GRAPH_NODE_STATUS_PART_ROLLBACK_MANIFEST = 7;
+  GRAPH_NODE_STATUS_PART_TRANSPORT_DROPS = 8;
+  GRAPH_NODE_STATUS_PART_TRANSPORT_ERRORS = 9;
+}
+
+message GraphNodeStatusEvent {
+  uint32 device = 1;
+  GraphNodeStatusPart part = 2;
+  uint32 format = 3;
+  uint32 executor_api = 4;
+  DeviceRole role = 5;
+  uint32 transfer_id = 6;
+  GraphUpdateState update_state = 7;
+  GraphUpdateError update_error = 8;
+  GraphStoreState store_state = 9;
+  GraphStoreError store_error = 10;
+  uint32 generation = 11;
+  uint32 checksum = 12;
+  uint32 active_devices = 13;
+  uint32 staged_devices = 14;
+  uint32 rollback_devices = 15;
+  uint32 rx_dropped = 16;
+  uint32 tx_dropped = 17;
+  uint32 bus_errors = 18;
 }
 
 message GraphUpdateEvent {
@@ -186,5 +260,6 @@ message DeviceEvent {
     ErrorEvent error = 3;
     AckEvent ack = 4;
     GraphUpdateEvent graph_update = 5;
+    GraphNodeStatusEvent graph_node_status = 6;
   }
 }

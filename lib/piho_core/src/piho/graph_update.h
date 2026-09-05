@@ -34,8 +34,9 @@ struct GraphUpdateCounters {
 
 class GraphUpdateParticipant {
    public:
-    bool begin(uint8_t device, GraphStore &store, GraphUpdateFrameWrite writeFrame,
-               void *writeContext, uint32_t nowMilliseconds);
+    bool begin(uint8_t device, GraphDeviceRole role, GraphStore &store,
+               GraphUpdateFrameWrite writeFrame, void *writeContext,
+               uint32_t nowMilliseconds);
     void handle(const ProtocolMessage &message, uint32_t nowMilliseconds);
     void service(uint32_t nowMilliseconds);
 
@@ -59,6 +60,7 @@ class GraphUpdateParticipant {
     void reject(GraphUpdateError error, uint32_t nowMilliseconds, bool discardStaged);
     void publish();
     void publishProgress();
+    void publishInventory();
     void publishTransient(uint16_t transferId, uint32_t generation, uint32_t checksum,
                           GraphUpdateError error);
     void resetAnnouncement(uint16_t transferId, uint32_t nowMilliseconds);
@@ -72,6 +74,7 @@ class GraphUpdateParticipant {
     GraphUpdateCounters counters_{};
     uint32_t lastActivityAt_ = 0;
     uint8_t device_ = 0;
+    GraphDeviceRole role_ = GraphDeviceRole::Input;
     uint8_t announcementParts_ = 0;
     uint8_t lastChunk_[kGraphChunkDataCapacity]{};
     uint8_t lastChunkSize_ = 0;
@@ -109,7 +112,7 @@ class GraphUpdateCoordinator {
     GraphUpdateError finishUpdate(uint16_t transferId, uint16_t sequenceCount,
                                   uint32_t nowMilliseconds);
     GraphUpdateError activateUpdate(uint32_t nowMilliseconds);
-    GraphUpdateError rollbackUpdate(const GraphIdentity &target,
+    GraphUpdateError rollbackUpdate(const GraphIdentity &target, uint32_t expectedDevices,
                                     uint32_t nowMilliseconds);
     GraphUpdateError abortUpdate(uint16_t transferId, uint32_t nowMilliseconds);
     GraphUpdateError requestStatus(uint16_t transferId, uint32_t nowMilliseconds);
@@ -147,6 +150,8 @@ class GraphUpdateCoordinator {
 
     static bool timeReached(uint32_t now, uint32_t deadline);
     static bool descriptorsValid(const GraphTransferDescriptor &descriptor);
+    static bool descriptorsEqual(const GraphTransferDescriptor &left,
+                                 const GraphTransferDescriptor &right);
     static bool identitiesEqual(const GraphIdentity &left, const GraphIdentity &right);
     static void increment(uint32_t &counter);
 

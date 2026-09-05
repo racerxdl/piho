@@ -97,6 +97,7 @@ class GraphStore {
     GraphStoreError discardStaged();
     GraphStoreError activate();
     GraphStoreError rollback();
+    bool stagedDeviceRoleMatches(uint8_t device, GraphDeviceRole role) const;
 
     GraphStoreError loadActiveInput(uint8_t device, LocalInputGraph &staging);
     GraphStoreError loadActiveOutput(uint8_t device, LocalOutputGraph &staging);

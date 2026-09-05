@@ -245,8 +245,10 @@ void processCommand(PihoController &controller,
         case HostCommand_graph_rollback_tag: {
             const GraphIdentityCommand &request = command.command.graph_rollback;
             const piho::GraphIdentity target{0, 0, request.generation, request.checksum};
-            reportGraphResult(DeviceOperation::GraphRollback,
-                              graphUpdate.rollbackUpdate(target, millis()), graphUpdate);
+            reportGraphResult(
+                DeviceOperation::GraphRollback,
+                graphUpdate.rollbackUpdate(target, request.expected_devices, millis()),
+                graphUpdate);
             return;
         }
         case HostCommand_graph_status_tag: {
@@ -333,6 +335,72 @@ void sendGraphUpdateEvent(const piho::GraphGatewayStatus &status) {
     update.state = static_cast<::GraphUpdateState>(status.state);
     update.error = static_cast<::GraphUpdateError>(status.lastError);
     update.chunk_pending = status.chunkPending;
+    sendDeviceEvent(event);
+}
+
+void sendGraphNodeStatusEvent(const piho::ProtocolMessage &message) {
+    DeviceEvent event = DeviceEvent_init_zero;
+    event.which_event = DeviceEvent_graph_node_status_tag;
+    GraphNodeStatusEvent &status = event.event.graph_node_status;
+    status.device = message.device;
+    switch (message.type) {
+        case piho::MessageType::GraphNodeCapabilities:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_CAPABILITIES;
+            status.format = message.graphNode.format;
+            status.executor_api = message.graphNode.executorApi;
+            status.role = static_cast<::DeviceRole>(message.graphNode.role);
+            break;
+        case piho::MessageType::GraphNodeState:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_STATE;
+            status.transfer_id = message.graphNode.transferId;
+            status.update_state =
+                static_cast<::GraphUpdateState>(message.graphNode.updateState);
+            status.update_error =
+                static_cast<::GraphUpdateError>(message.graphNode.updateError);
+            status.store_state =
+                static_cast<::GraphStoreState>(message.graphNode.storeState);
+            status.store_error =
+                static_cast<::GraphStoreError>(message.graphNode.storeError);
+            break;
+        case piho::MessageType::GraphActiveIdentity:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_ACTIVE;
+            status.generation = message.graphNode.identity.generation;
+            status.checksum = message.graphNode.identity.checksum;
+            break;
+        case piho::MessageType::GraphStagedIdentity:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_STAGED;
+            status.generation = message.graphNode.identity.generation;
+            status.checksum = message.graphNode.identity.checksum;
+            break;
+        case piho::MessageType::GraphRollbackIdentity:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_ROLLBACK;
+            status.generation = message.graphNode.identity.generation;
+            status.checksum = message.graphNode.identity.checksum;
+            break;
+        case piho::MessageType::GraphManifestStatus:
+            status.part = GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_MANIFESTS;
+            status.active_devices = message.graphNode.activeDevices;
+            status.staged_devices = message.graphNode.stagedDevices;
+            break;
+        case piho::MessageType::GraphRollbackManifest:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_ROLLBACK_MANIFEST;
+            status.rollback_devices = message.graphNode.rollbackDevices;
+            break;
+        case piho::MessageType::GraphTransportDrops:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_TRANSPORT_DROPS;
+            status.rx_dropped = message.graphNode.rxDropped;
+            status.tx_dropped = message.graphNode.txDropped;
+            break;
+        case piho::MessageType::GraphTransportErrors:
+            status.part =
+                GraphNodeStatusPart_GRAPH_NODE_STATUS_PART_TRANSPORT_ERRORS;
+            status.bus_errors = message.graphNode.busErrors;
+            break;
+        default:
+            return;
+    }
     sendDeviceEvent(event);
 }
 void sendErrorEvent(DeviceErrorCode code) {

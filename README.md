@@ -55,6 +55,9 @@ bun test
 bun run flow validate examples/synthetic.json
 bun run flow compile examples/synthetic.json --output /tmp/synthetic.phg
 bun run flow inspect /tmp/synthetic.phg
+bun run flow deploy /tmp/synthetic.phg --port /dev/ttyACM0
+bun run flow status /tmp/synthetic.phg --port /dev/ttyACM0
+bun run flow rollback --port /dev/ttyACM0
 ```
 
 See [`docs/flow-executor-semantics.md`](docs/flow-executor-semantics.md) for runtime behavior and [`docs/flow-image-format.md`](docs/flow-image-format.md) for the authoring schema, canonical ID assignment, and binary record layout.
@@ -91,10 +94,14 @@ Version is `1`. Ordinary addressed commands use a physical device ID (`0..31`). 
 | Graph activate/rollback | generation and image CRC32 |
 | Graph status identity | transfer ID, generation, state, and error |
 | Graph status progress | transfer ID, image CRC32, and next sequence |
+| Graph node capabilities/state | graph format, executor API, role, transfer/store state, and typed errors |
+| Graph active/staged/rollback identity | generation and image CRC32 |
+| Graph active/staged/rollback manifest | expected-device bitmaps |
+| Graph transport counters | dropped RX/TX frames and CAN bus errors |
 
 Frames with another namespace, remote-frame flag, unsupported type, invalid device, incorrect length, or invalid payload are rejected before dispatch.
 
-Runtime action frames use types 10 and 11. Graph-transfer frames use types 16 through 27 and a separate low-priority transmit queue, so actions and health traffic preempt an update even when update frames are already buffered.
+Runtime action frames use types 10 and 11. Graph-transfer and inventory frames use types 16 through 36 and a separate low-priority transmit queue, so actions and health traffic preempt an update even when update frames are already buffered.
 
 Global host addresses are mapped as follows:
 
@@ -111,7 +118,7 @@ USB serial carries length-delimited Nanopb messages, not diagnostic text:
 "PH" | version:u8 | payload_length:u16-le | protobuf_payload | crc16:u16-le
 ```
 
-The version is `1`, the payload limit is 128 bytes, and CRC-16/CCITT uses polynomial `0x1021` with initial value `0xFFFF`. The checksum covers version, encoded length, and payload. Host-to-device payloads are `HostCommand`; responses and asynchronous updates are `DeviceEvent`. Graph commands expose begin, chunk, finish, abort, activate, rollback, and status operations. `GraphUpdateEvent` reports transfer identity, progress, per-state device bitmaps, and a typed state/error. See [`protocol/shift.proto`](protocol/shift.proto) for the command and event schema.
+The version is `1`, the payload limit is 128 bytes, and CRC-16/CCITT uses polynomial `0x1021` with initial value `0xFFFF`. The checksum covers version, encoded length, and payload. Host-to-device payloads are `HostCommand`; responses and asynchronous updates are `DeviceEvent`. Graph commands expose begin, chunk, finish, abort, activate, rollback, and status operations. `GraphUpdateEvent` reports transfer identity, progress, per-state device bitmaps, and a typed state/error. `GraphNodeStatusEvent` reports each board's role, supported graph/executor versions, active/staged/rollback identities and manifests, storage state, and transport counters. See [`protocol/shift.proto`](protocol/shift.proto) for the command and event schema.
 
 The parser consumes a bounded number of bytes per firmware loop, validates framing before protobuf decoding, and resynchronizes after malformed input.
 
@@ -120,6 +127,10 @@ The parser consumes a bounded number of bytes per firmware loop, validates frami
 Any USB-connected node can coordinate one network update session. The host starts a transfer with format, executor API, generation, image length, CRC32, and the exact bitmap of graph devices; then sends ordered four-byte chunks. Each chunk is stop-and-wait and idempotent. A duplicate with identical bytes is accepted, while missing, out-of-order, or conflicting data is rejected without modifying the active graph.
 
 Finish succeeds only after every expected board has acknowledged all chunks and independently validated the stored image. Activation is gated on every expected board reporting the same staged generation and checksum. Activate and rollback commands are retried until all expected boards report the target identity, so a board that misses the first broadcast converges. A five-second inactive transfer times out and discards only the receiving or staged candidate; explicit abort has the same active-graph safety property.
+
+`piho-flow deploy` queries every connected board before transferring bytes. Preflight rejects missing or unexpected IDs, role mismatches, unsupported graph/executor versions, incomplete inventory, and unrecoverable storage errors. Transfer commands have bounded retries and deadlines; all boards must report the same staged identity before activation. A failed transfer reports its phase plus missing and rejecting device IDs while preserving the prior active generation.
+
+`piho-flow status` discovers the network without an image, or verifies IDs, roles, and the active generation against an optional `.phg` image. `piho-flow rollback` first requires every active board to agree on the retained rollback identity and device manifest. All three commands accept `--timeout-ms` and `--json`; JSON mode writes one machine-readable report and uses a nonzero exit status when `ok` is false. Human mode lists per-node identities, update/storage errors, and transport counters. Serial ports are configured as 115200-baud raw devices with `stty`, so the invoking Linux user needs read/write permission on the selected device.
 
 ## Triggers and storage
 

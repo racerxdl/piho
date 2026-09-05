@@ -46,6 +46,15 @@ enum class MessageType : uint8_t {
     GraphStatusRequest = 25,
     GraphStatusIdentity = 26,
     GraphStatusProgress = 27,
+    GraphNodeCapabilities = 28,
+    GraphNodeState = 29,
+    GraphActiveIdentity = 30,
+    GraphStagedIdentity = 31,
+    GraphRollbackIdentity = 32,
+    GraphManifestStatus = 33,
+    GraphRollbackManifest = 34,
+    GraphTransportDrops = 35,
+    GraphTransportErrors = 36,
 };
 
 static_assert(static_cast<uint8_t>(MessageType::ExecuteAction) <
@@ -99,6 +108,8 @@ enum class GraphUpdateError : uint8_t {
     NotReady = 11,
     SendFailed = 12,
     Aborted = 13,
+    WrongRole = 14,
+    Incompatible = 15,
 };
 
 struct GraphTransferDescriptor {
@@ -121,6 +132,24 @@ struct GraphTransferMessage {
     GraphUpdateError error = GraphUpdateError::None;
     uint8_t chunkSize = 0;
     uint8_t chunk[kGraphChunkDataCapacity]{};
+};
+
+struct GraphNodeStatusMessage {
+    GraphIdentity identity{};
+    uint16_t transferId = 0;
+    uint16_t format = 0;
+    uint16_t executorApi = 0;
+    uint32_t activeDevices = 0;
+    uint32_t stagedDevices = 0;
+    uint32_t rollbackDevices = 0;
+    GraphDeviceRole role = GraphDeviceRole::Input;
+    GraphUpdateState updateState = GraphUpdateState::Idle;
+    GraphUpdateError updateError = GraphUpdateError::None;
+    uint8_t storeState = 0;
+    uint32_t rxDropped = 0;
+    uint32_t txDropped = 0;
+    uint32_t busErrors = 0;
+    uint8_t storeError = 0;
 };
 
 struct ActionRequest {
@@ -151,6 +180,7 @@ struct ProtocolMessage {
     ActionRequest actionRequest{};
     ActionAcknowledgement actionAcknowledgement{};
     GraphTransferMessage graph{};
+    GraphNodeStatusMessage graphNode{};
 };
 
 struct DecodeResult {
@@ -191,6 +221,26 @@ class ProtocolCodec {
     static bool graphStatusProgress(uint8_t sourceDevice, uint16_t transferId,
                                     uint32_t checksum, uint16_t nextSequence,
                                     CanFrame &frame);
+    static bool graphNodeCapabilities(uint8_t sourceDevice, GraphDeviceRole role,
+                                      uint16_t format, uint16_t executorApi,
+                                      CanFrame &frame);
+    static bool graphNodeState(uint8_t sourceDevice, uint16_t transferId,
+                               GraphUpdateState updateState, GraphUpdateError updateError,
+                               uint8_t storeState, uint8_t storeError, CanFrame &frame);
+    static bool graphActiveIdentity(uint8_t sourceDevice, const GraphIdentity &identity,
+                                    CanFrame &frame);
+    static bool graphStagedIdentity(uint8_t sourceDevice, const GraphIdentity &identity,
+                                    CanFrame &frame);
+    static bool graphRollbackIdentity(uint8_t sourceDevice, const GraphIdentity &identity,
+                                      CanFrame &frame);
+    static bool graphManifestStatus(uint8_t sourceDevice, uint32_t activeDevices,
+                                    uint32_t stagedDevices, CanFrame &frame);
+    static bool graphRollbackManifest(uint8_t sourceDevice, uint32_t rollbackDevices,
+                                      CanFrame &frame);
+    static bool graphTransportDrops(uint8_t sourceDevice, uint32_t rxDropped,
+                                    uint32_t txDropped, CanFrame &frame);
+    static bool graphTransportErrors(uint8_t sourceDevice, uint32_t busErrors,
+                                     CanFrame &frame);
 
     static DecodeResult decode(const CanFrame &frame);
 

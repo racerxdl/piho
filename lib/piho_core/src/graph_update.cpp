@@ -45,13 +45,16 @@ void GraphUpdateParticipant::increment(uint32_t &counter) {
     }
 }
 
-bool GraphUpdateParticipant::begin(uint8_t device, GraphStore &store,
-                                   GraphUpdateFrameWrite writeFrame, void *writeContext,
-                                   uint32_t nowMilliseconds) {
-    if (!isPhysicalDevice(device) || writeFrame == nullptr) {
+bool GraphUpdateParticipant::begin(uint8_t device, GraphDeviceRole role,
+                                   GraphStore &store, GraphUpdateFrameWrite writeFrame,
+                                   void *writeContext, uint32_t nowMilliseconds) {
+    if (!isPhysicalDevice(device) ||
+        (role != GraphDeviceRole::Input && role != GraphDeviceRole::Output) ||
+        writeFrame == nullptr) {
         return false;
     }
     device_ = device;
+    role_ = role;
     store_ = &store;
     writeFrame_ = writeFrame;
     writeContext_ = writeContext;
@@ -133,6 +136,38 @@ void GraphUpdateParticipant::publishProgress() {
         ProtocolCodec::graphStatusProgress(device_, status_.transferId, status_.checksum,
                                            status_.nextSequence, progress)) {
         if (writeFrame_(writeContext_, progress)) {
+            increment(counters_.transmittedFrames);
+        } else {
+            increment(counters_.sendFailures);
+        }
+    }
+}
+
+void GraphUpdateParticipant::publishInventory() {
+    if (!initialized_ || store_ == nullptr) {
+        return;
+    }
+    const GraphStoreStatus &stored = store_->status();
+    CanFrame frames[7]{};
+    const bool encoded[] = {
+        ProtocolCodec::graphNodeCapabilities(device_, role_, kGraphFormatVersion,
+                                             kGraphExecutorApiVersion, frames[0]),
+        ProtocolCodec::graphNodeState(
+            device_, status_.transferId, status_.state, status_.error,
+            static_cast<uint8_t>(stored.state), static_cast<uint8_t>(stored.lastError),
+            frames[1]),
+        ProtocolCodec::graphActiveIdentity(device_, stored.active, frames[2]),
+        ProtocolCodec::graphStagedIdentity(device_, stored.staged, frames[3]),
+        ProtocolCodec::graphRollbackIdentity(device_, stored.rollback, frames[4]),
+        ProtocolCodec::graphManifestStatus(device_, stored.activeDevices,
+                                           stored.stagedDevices, frames[5]),
+        ProtocolCodec::graphRollbackManifest(device_, stored.rollbackDevices, frames[6]),
+    };
+    for (uint8_t index = 0; index < 7; ++index) {
+        if (!encoded[index]) {
+            continue;
+        }
+        if (writeFrame_(writeContext_, frames[index])) {
             increment(counters_.transmittedFrames);
         } else {
             increment(counters_.sendFailures);
@@ -259,8 +294,11 @@ void GraphUpdateParticipant::handleAnnouncement(const ProtocolMessage &message,
 void GraphUpdateParticipant::completeAnnouncement(uint32_t nowMilliseconds) {
     const uint32_t localDeviceBit = static_cast<uint32_t>(1u) << device_;
     if (descriptor_.format != kGraphFormatVersion ||
-        descriptor_.executorApi != kGraphExecutorApiVersion ||
-        descriptor_.imageSize < kGraphHeaderSize ||
+        descriptor_.executorApi != kGraphExecutorApiVersion) {
+        reject(GraphUpdateError::Incompatible, nowMilliseconds, false);
+        return;
+    }
+    if (descriptor_.imageSize < kGraphHeaderSize ||
         descriptor_.imageSize > kGraphImageCapacity || descriptor_.generation == 0 ||
         descriptor_.expectedDevices == 0) {
         reject(GraphUpdateError::InvalidDescriptor, nowMilliseconds, false);
@@ -284,7 +322,8 @@ void GraphUpdateParticipant::completeAnnouncement(uint32_t nowMilliseconds) {
         identityMatches(stored.staged, descriptor_.generation, descriptor_.checksum) &&
         stored.staged.format == descriptor_.format &&
         stored.staged.executorApi == descriptor_.executorApi &&
-        stored.stagedDevices == descriptor_.expectedDevices) {
+        stored.stagedDevices == descriptor_.expectedDevices &&
+        store_->stagedDeviceRoleMatches(device_, role_)) {
         status_.transferId = descriptor_.transferId;
         status_.generation = descriptor_.generation;
         status_.checksum = descriptor_.checksum;
@@ -439,6 +478,11 @@ void GraphUpdateParticipant::handleFinish(const GraphTransferMessage &graph,
         reject(GraphUpdateError::InvalidImage, nowMilliseconds, false);
         return;
     }
+    if (!store_->stagedDeviceRoleMatches(device_, role_)) {
+        store_->discardStaged();
+        reject(GraphUpdateError::WrongRole, nowMilliseconds, false);
+        return;
+    }
     status_.state = GraphUpdateState::Staged;
     status_.error = GraphUpdateError::None;
     status_.generation = descriptor_.generation;
@@ -559,6 +603,7 @@ void GraphUpdateParticipant::handle(const ProtocolMessage &message,
             if (message.graph.transferId == 0 || status_.transferId == 0 ||
                 message.graph.transferId == status_.transferId) {
                 publish();
+                publishInventory();
             }
             break;
         default:
@@ -586,6 +631,14 @@ bool GraphUpdateCoordinator::descriptorsValid(const GraphTransferDescriptor &des
            descriptor.executorApi == kGraphExecutorApiVersion && descriptor.generation != 0 &&
            descriptor.imageSize >= kGraphHeaderSize &&
            descriptor.imageSize <= kGraphImageCapacity && descriptor.expectedDevices != 0;
+}
+
+bool GraphUpdateCoordinator::descriptorsEqual(const GraphTransferDescriptor &left,
+                                              const GraphTransferDescriptor &right) {
+    return left.transferId == right.transferId && left.format == right.format &&
+           left.executorApi == right.executorApi && left.generation == right.generation &&
+           left.imageSize == right.imageSize && left.checksum == right.checksum &&
+           left.expectedDevices == right.expectedDevices;
 }
 
 bool GraphUpdateCoordinator::identitiesEqual(const GraphIdentity &left,
@@ -624,9 +677,16 @@ GraphUpdateError GraphUpdateCoordinator::beginUpdate(
     if (!configured_ || !descriptorsValid(descriptor)) {
         return GraphUpdateError::InvalidDescriptor;
     }
-    if (phase_ == Phase::Announcing || phase_ == Phase::Receiving ||
-        phase_ == Phase::Finishing || phase_ == Phase::Staged ||
-        phase_ == Phase::Activating || phase_ == Phase::RollingBack) {
+    if (phase_ == Phase::Announcing ||
+        (phase_ == Phase::Receiving && status_.nextSequence == 0 &&
+         !status_.chunkPending)) {
+        return descriptorsEqual(status_.descriptor, descriptor)
+                   ? GraphUpdateError::None
+                   : GraphUpdateError::Conflict;
+    }
+    if (phase_ == Phase::Receiving || phase_ == Phase::Finishing ||
+        phase_ == Phase::Staged || phase_ == Phase::Activating ||
+        phase_ == Phase::RollingBack) {
         return GraphUpdateError::Conflict;
     }
 
@@ -708,6 +768,11 @@ GraphUpdateError GraphUpdateCoordinator::finishUpdate(uint16_t transferId,
     if (transferId != status_.descriptor.transferId) {
         return GraphUpdateError::Conflict;
     }
+    if ((phase_ == Phase::Finishing || phase_ == Phase::Staged ||
+         phase_ == Phase::Activating || phase_ == Phase::Active) &&
+        sequenceCount == status_.sequenceCount) {
+        return GraphUpdateError::None;
+    }
     if (phase_ != Phase::Receiving || status_.chunkPending ||
         status_.readyDevices != status_.descriptor.expectedDevices) {
         return GraphUpdateError::NotReady;
@@ -726,8 +791,9 @@ GraphUpdateError GraphUpdateCoordinator::finishUpdate(uint16_t transferId,
 }
 
 GraphUpdateError GraphUpdateCoordinator::activateUpdate(uint32_t nowMilliseconds) {
-    if (phase_ == Phase::Active &&
-        status_.activeDevices == status_.descriptor.expectedDevices) {
+    if (phase_ == Phase::Activating ||
+        (phase_ == Phase::Active &&
+         status_.activeDevices == status_.descriptor.expectedDevices)) {
         return GraphUpdateError::None;
     }
     if (phase_ != Phase::Staged ||
@@ -746,21 +812,33 @@ GraphUpdateError GraphUpdateCoordinator::activateUpdate(uint32_t nowMilliseconds
 }
 
 GraphUpdateError GraphUpdateCoordinator::rollbackUpdate(const GraphIdentity &target,
+                                                        uint32_t expectedDevices,
                                                         uint32_t nowMilliseconds) {
-    if (target.generation == 0 || status_.descriptor.expectedDevices == 0) {
+    if (!configured_ || target.generation == 0 || expectedDevices == 0) {
         return GraphUpdateError::InvalidDescriptor;
     }
-    if (phase_ == Phase::Active &&
-        status_.rollbackDevices == status_.descriptor.expectedDevices &&
+    if ((phase_ == Phase::RollingBack ||
+         (phase_ == Phase::Active && status_.rollbackDevices == expectedDevices)) &&
+        status_.descriptor.expectedDevices == expectedDevices &&
         identitiesEqual(status_.rollbackTarget, target)) {
         return GraphUpdateError::None;
     }
-    if (phase_ != Phase::Active) {
-        return GraphUpdateError::NotReady;
+    if (phase_ == Phase::Announcing || phase_ == Phase::Receiving ||
+        phase_ == Phase::Finishing || phase_ == Phase::Staged ||
+        phase_ == Phase::Activating || phase_ == Phase::RollingBack) {
+        return GraphUpdateError::Conflict;
     }
+    if (phase_ == Phase::Active && status_.descriptor.expectedDevices != 0 &&
+        status_.descriptor.expectedDevices != expectedDevices) {
+        return GraphUpdateError::Conflict;
+    }
+
+    status_ = GraphGatewayStatus{};
+    status_.descriptor.expectedDevices = expectedDevices;
     status_.rollbackTarget = target;
-    status_.rollbackDevices = 0;
-    status_.missingDevices = status_.descriptor.expectedDevices;
+    status_.state = GraphUpdateState::Active;
+    status_.missingDevices = expectedDevices;
+    resetObservations();
     phase_ = Phase::RollingBack;
     lastActivityAt_ = nowMilliseconds;
     nextSendAt_ = nowMilliseconds;
@@ -771,8 +849,18 @@ GraphUpdateError GraphUpdateCoordinator::rollbackUpdate(const GraphIdentity &tar
 
 GraphUpdateError GraphUpdateCoordinator::abortUpdate(uint16_t transferId,
                                                      uint32_t nowMilliseconds) {
-    if (transferId == 0 || transferId != status_.descriptor.transferId) {
-        return GraphUpdateError::Conflict;
+    if (transferId == 0) {
+        return GraphUpdateError::InvalidDescriptor;
+    }
+    if (transferId != status_.descriptor.transferId) {
+        if (phase_ != Phase::Idle && phase_ != Phase::Rejected &&
+            phase_ != Phase::Active) {
+            return GraphUpdateError::Conflict;
+        }
+        CanFrame frame{};
+        return ProtocolCodec::graphAbort(transferId, frame) && sendFrame(frame)
+                   ? GraphUpdateError::None
+                   : GraphUpdateError::SendFailed;
     }
     reject(GraphUpdateError::Aborted, nowMilliseconds, true);
     return GraphUpdateError::None;
@@ -891,7 +979,12 @@ void GraphUpdateCoordinator::recompute(uint32_t nowMilliseconds) {
             (node.state == GraphUpdateState::Staged ||
              node.state == GraphUpdateState::Active ||
              node.state == GraphUpdateState::Rollback);
-        if (node.transferId != status_.descriptor.transferId && !persistedIdentity) {
+        const bool rollbackObservation =
+            phase_ == Phase::RollingBack && node.hasIdentity &&
+            node.generation == status_.rollbackTarget.generation &&
+            node.checksum == status_.rollbackTarget.checksum;
+        if (node.transferId != status_.descriptor.transferId && !persistedIdentity &&
+            !rollbackObservation) {
             continue;
         }
         if (node.hasIdentity && node.state == GraphUpdateState::Rejected) {
@@ -919,9 +1012,7 @@ void GraphUpdateCoordinator::recompute(uint32_t nowMilliseconds) {
             node.nextSequence == static_cast<uint16_t>(pendingSequence_ + 1)) {
             progressed |= bit;
         }
-        if (node.hasIdentity && node.hasProgress &&
-            node.generation == status_.rollbackTarget.generation &&
-            node.checksum == status_.rollbackTarget.checksum &&
+        if (rollbackObservation && node.hasProgress &&
             node.state == GraphUpdateState::Rollback) {
             rolledBack |= bit;
         }

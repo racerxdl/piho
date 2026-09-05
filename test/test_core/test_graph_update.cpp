@@ -183,6 +183,10 @@ void stageThroughGateway(SimulatedBus &bus, piho::GraphUpdateCoordinator &coordi
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphUpdateError::None),
                             static_cast<uint8_t>(
                                 coordinator.beginUpdate(descriptor, nowMilliseconds)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::GraphUpdateError::None),
+        static_cast<uint8_t>(
+            coordinator.beginUpdate(descriptor, nowMilliseconds)));
     bus.pump(nowMilliseconds);
     waitForReady(bus, coordinator, first, second, nowMilliseconds,
                  descriptor.expectedDevices);
@@ -222,6 +226,10 @@ void stageThroughGateway(SimulatedBus &bus, piho::GraphUpdateCoordinator &coordi
                                  coordinator.status().nextSequence);
     }
 
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::GraphUpdateError::None),
+        static_cast<uint8_t>(
+            coordinator.finishUpdate(transferId, sequenceCount, nowMilliseconds)));
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(piho::GraphUpdateError::None),
         static_cast<uint8_t>(
@@ -276,6 +284,68 @@ void test_graph_update_can_codec_is_strict_and_low_priority() {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::ProtocolError::InvalidLength),
                             static_cast<uint8_t>(piho::ProtocolCodec::decode(frame).error));
 
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphNodeCapabilities(
+        7, piho::GraphDeviceRole::Output, piho::kGraphFormatVersion,
+        piho::kGraphExecutorApiVersion, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_UINT8(7, decoded.message.device);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::GraphDeviceRole::Output),
+        static_cast<uint8_t>(decoded.message.graphNode.role));
+    TEST_ASSERT_EQUAL_UINT16(piho::kGraphExecutorApiVersion,
+                             decoded.message.graphNode.executorApi);
+    frame.data[7] = 1;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::ProtocolError::InvalidPayload),
+                            static_cast<uint8_t>(piho::ProtocolCodec::decode(frame).error));
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphNodeState(
+        7, descriptor.transferId, piho::GraphUpdateState::Rejected,
+        piho::GraphUpdateError::WrongRole, 5, 18, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphUpdateError::WrongRole),
+                            static_cast<uint8_t>(decoded.message.graphNode.updateError));
+    TEST_ASSERT_EQUAL_UINT8(18, decoded.message.graphNode.storeError);
+    TEST_ASSERT_FALSE(piho::ProtocolCodec::graphNodeState(
+        7, descriptor.transferId, piho::GraphUpdateState::Active,
+        piho::GraphUpdateError::None, 6, 0, frame));
+
+    const piho::GraphIdentity identity{piho::kGraphFormatVersion,
+                                       piho::kGraphExecutorApiVersion,
+                                       descriptor.generation, descriptor.checksum};
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphActiveIdentity(7, identity, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_UINT32(identity.generation,
+                             decoded.message.graphNode.identity.generation);
+    TEST_ASSERT_EQUAL_UINT32(identity.checksum,
+                             decoded.message.graphNode.identity.checksum);
+    TEST_ASSERT_FALSE(piho::ProtocolCodec::graphStagedIdentity(
+        7, piho::GraphIdentity{0, 0, 0, 1}, frame));
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphManifestStatus(
+        7, descriptor.expectedDevices, 0, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(descriptor.expectedDevices,
+                            decoded.message.graphNode.activeDevices);
+
+    TEST_ASSERT_TRUE(
+        piho::ProtocolCodec::graphTransportDrops(7, 0x10203040, 0x50607080, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(0x10203040, decoded.message.graphNode.rxDropped);
+    TEST_ASSERT_EQUAL_HEX32(0x50607080, decoded.message.graphNode.txDropped);
+
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphTransportErrors(7, 0x90A0B0C0, frame));
+    decoded = piho::ProtocolCodec::decode(frame);
+    TEST_ASSERT_TRUE(decoded.ok());
+    TEST_ASSERT_EQUAL_HEX32(0x90A0B0C0, decoded.message.graphNode.busErrors);
+    frame.data[7] = 1;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::ProtocolError::InvalidPayload),
+                            static_cast<uint8_t>(piho::ProtocolCodec::decode(frame).error));
+
     piho::CanFrame action{};
     const piho::ActionRequest request{1, 1, 1, 1, 7, true};
     TEST_ASSERT_TRUE(piho::ProtocolCodec::executeAction(request, action));
@@ -315,10 +385,14 @@ void test_gateway_stages_activates_retries_and_rolls_back_all_boards() {
     bus.add(8, fourthParticipant);
     coordinator.configure(SimulatedBus::write, &bus);
     uint32_t now = 0;
-    TEST_ASSERT_TRUE(firstParticipant.begin(1, firstStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(secondParticipant.begin(7, secondStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(thirdParticipant.begin(2, thirdStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(fourthParticipant.begin(8, fourthStore, SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(firstParticipant.begin(1, piho::GraphDeviceRole::Input, firstStore,
+                                            SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(secondParticipant.begin(7, piho::GraphDeviceRole::Output, secondStore,
+                                             SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(thirdParticipant.begin(2, piho::GraphDeviceRole::Input, thirdStore,
+                                            SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(fourthParticipant.begin(8, piho::GraphDeviceRole::Output, fourthStore,
+                                             SimulatedBus::write, &bus, now));
 
     const std::vector<uint8_t> first = graphImage(1);
     stageThroughGateway(bus, coordinator, firstParticipant, secondParticipant, first,
@@ -329,6 +403,8 @@ void test_gateway_stages_activates_retries_and_rolls_back_all_boards() {
     TEST_ASSERT_FALSE(fourthStore.hasActiveGraph());
 
     bus.dropNextFor(piho::MessageType::GraphActivate, 7);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphUpdateError::None),
+                            static_cast<uint8_t>(coordinator.activateUpdate(now)));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::GraphUpdateError::None),
                             static_cast<uint8_t>(coordinator.activateUpdate(now)));
     bus.pump(now);
@@ -363,7 +439,12 @@ void test_gateway_stages_activates_retries_and_rolls_back_all_boards() {
         readUint32(&first[piho::kGraphChecksumOffset])};
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(piho::GraphUpdateError::None),
-        static_cast<uint8_t>(coordinator.rollbackUpdate(rollbackTarget, now)));
+        static_cast<uint8_t>(
+            coordinator.rollbackUpdate(rollbackTarget, kExpectedDevices, now)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::GraphUpdateError::None),
+        static_cast<uint8_t>(
+            coordinator.rollbackUpdate(rollbackTarget, kExpectedDevices, now)));
     bus.pump(now);
     waitForState(bus, coordinator, firstParticipant, secondParticipant, now,
                  piho::GraphUpdateState::Rollback);
@@ -372,6 +453,24 @@ void test_gateway_stages_activates_retries_and_rolls_back_all_boards() {
     TEST_ASSERT_EQUAL_UINT32(1, thirdStore.status().active.generation);
     TEST_ASSERT_EQUAL_UINT32(1, fourthStore.status().active.generation);
     TEST_ASSERT_EQUAL_HEX32(kExpectedDevices, coordinator.status().rollbackDevices);
+
+    piho::GraphUpdateCoordinator restartedCoordinator;
+    restartedCoordinator.configure(&SimulatedBus::write, &bus);
+    bus.coordinator = &restartedCoordinator;
+    const piho::GraphIdentity secondTarget{
+        piho::kGraphFormatVersion, piho::kGraphExecutorApiVersion, 2,
+        readUint32(&second[piho::kGraphChecksumOffset])};
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(piho::GraphUpdateError::None),
+        static_cast<uint8_t>(
+            restartedCoordinator.rollbackUpdate(secondTarget, kExpectedDevices, now)));
+    bus.pump(now);
+    waitForState(bus, restartedCoordinator, firstParticipant, secondParticipant, now,
+                 piho::GraphUpdateState::Rollback);
+    TEST_ASSERT_EQUAL_UINT32(2, firstStore.status().active.generation);
+    TEST_ASSERT_EQUAL_UINT32(2, secondStore.status().active.generation);
+    TEST_ASSERT_EQUAL_UINT32(2, thirdStore.status().active.generation);
+    TEST_ASSERT_EQUAL_UINT32(2, fourthStore.status().active.generation);
 }
 
 void test_gateway_reports_rejection_abort_missing_devices_and_timeout() {
@@ -411,10 +510,14 @@ void test_gateway_reports_rejection_abort_missing_devices_and_timeout() {
     bus.add(8, fourthParticipant);
     coordinator.configure(SimulatedBus::write, &bus);
     uint32_t now = 0;
-    TEST_ASSERT_TRUE(firstParticipant.begin(1, firstStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(secondParticipant.begin(7, secondStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(thirdParticipant.begin(2, thirdStore, SimulatedBus::write, &bus, now));
-    TEST_ASSERT_TRUE(fourthParticipant.begin(8, fourthStore, SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(firstParticipant.begin(1, piho::GraphDeviceRole::Input, firstStore,
+                                            SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(secondParticipant.begin(7, piho::GraphDeviceRole::Output, secondStore,
+                                             SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(thirdParticipant.begin(2, piho::GraphDeviceRole::Input, thirdStore,
+                                            SimulatedBus::write, &bus, now));
+    TEST_ASSERT_TRUE(fourthParticipant.begin(8, piho::GraphDeviceRole::Output, fourthStore,
+                                             SimulatedBus::write, &bus, now));
 
     const piho::GraphTransferDescriptor abortDescriptor =
         transferDescriptor(update, 0x201);

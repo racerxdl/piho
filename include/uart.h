@@ -38,3 +38,4 @@ void sendStatusEvent(const PihoController &controller);
 void sendErrorEvent(DeviceErrorCode code);
 void sendAckEvent(DeviceOperation operation, bool accepted);
 void sendGraphUpdateEvent(const piho::GraphGatewayStatus &status);
+void sendGraphNodeStatusEvent(const piho::ProtocolMessage &message);

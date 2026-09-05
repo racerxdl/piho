@@ -53,7 +53,7 @@ bool validGraphState(GraphUpdateState state) {
 }
 
 bool validGraphError(GraphUpdateError error) {
-    return error >= GraphUpdateError::None && error <= GraphUpdateError::Aborted;
+    return error >= GraphUpdateError::None && error <= GraphUpdateError::Incompatible;
 }
 
 bool validTransferDescriptor(const GraphTransferDescriptor &descriptor) {
@@ -61,6 +61,11 @@ bool validTransferDescriptor(const GraphTransferDescriptor &descriptor) {
            descriptor.executorApi != 0 && descriptor.generation != 0 &&
            descriptor.imageSize >= kGraphHeaderSize &&
            descriptor.imageSize <= kGraphImageCapacity && descriptor.expectedDevices != 0;
+}
+
+bool isGraphNodeStatus(MessageType type) {
+    return type >= MessageType::GraphStatusIdentity &&
+           type <= MessageType::GraphTransportErrors;
 }
 
 bool acceptsBroadcast(MessageType type) {
@@ -71,8 +76,7 @@ bool validDevice(MessageType type, uint8_t encodedDevice) {
     if (type == MessageType::ActionAck) {
         return isPhysicalDevice(static_cast<uint8_t>(encodedDevice & 0x1Fu));
     }
-    if (type == MessageType::GraphStatusIdentity ||
-        type == MessageType::GraphStatusProgress) {
+    if (isGraphNodeStatus(type)) {
         return isPhysicalDevice(encodedDevice);
     }
     if (static_cast<uint8_t>(type) >= kGraphTransferMessageTypeMinimum) {
@@ -110,6 +114,15 @@ uint8_t expectedLength(MessageType type) {
         case MessageType::GraphRollback:
         case MessageType::GraphStatusIdentity:
         case MessageType::GraphStatusProgress:
+        case MessageType::GraphNodeCapabilities:
+        case MessageType::GraphNodeState:
+        case MessageType::GraphActiveIdentity:
+        case MessageType::GraphStagedIdentity:
+        case MessageType::GraphRollbackIdentity:
+        case MessageType::GraphManifestStatus:
+        case MessageType::GraphRollbackManifest:
+        case MessageType::GraphTransportDrops:
+        case MessageType::GraphTransportErrors:
             return 8;
         case MessageType::GraphChunk:
             return 0xFE;
@@ -142,6 +155,15 @@ bool knownType(uint8_t rawType, MessageType &type) {
         case MessageType::GraphStatusRequest:
         case MessageType::GraphStatusIdentity:
         case MessageType::GraphStatusProgress:
+        case MessageType::GraphNodeCapabilities:
+        case MessageType::GraphNodeState:
+        case MessageType::GraphActiveIdentity:
+        case MessageType::GraphStagedIdentity:
+        case MessageType::GraphRollbackIdentity:
+        case MessageType::GraphManifestStatus:
+        case MessageType::GraphRollbackManifest:
+        case MessageType::GraphTransportDrops:
+        case MessageType::GraphTransportErrors:
             type = static_cast<MessageType>(rawType);
             return true;
     }
@@ -426,12 +448,135 @@ bool ProtocolCodec::graphStatusProgress(uint8_t sourceDevice, uint16_t transferI
     return true;
 }
 
+bool ProtocolCodec::graphNodeCapabilities(uint8_t sourceDevice, GraphDeviceRole role,
+                                          uint16_t format, uint16_t executorApi,
+                                          CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) ||
+        (role != GraphDeviceRole::Input && role != GraphDeviceRole::Output) ||
+        format == 0 || executorApi == 0) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphNodeCapabilities, sourceDevice);
+    frame.length = 8;
+    encodeUint16(format, frame.data);
+    encodeUint16(executorApi, &frame.data[2]);
+    frame.data[4] = static_cast<uint8_t>(role);
+    return true;
+}
+
+bool ProtocolCodec::graphNodeState(uint8_t sourceDevice, uint16_t transferId,
+                                   GraphUpdateState updateState,
+                                   GraphUpdateError updateError, uint8_t storeState,
+                                   uint8_t storeError, CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) || !validGraphState(updateState) ||
+        !validGraphError(updateError) || storeState > 5 || storeError > 18) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphNodeState, sourceDevice);
+    frame.length = 8;
+    encodeUint16(transferId, frame.data);
+    frame.data[2] = static_cast<uint8_t>(updateState);
+    frame.data[3] = static_cast<uint8_t>(updateError);
+    frame.data[4] = storeState;
+    frame.data[5] = storeError;
+    return true;
+}
+
+bool ProtocolCodec::graphActiveIdentity(uint8_t sourceDevice,
+                                        const GraphIdentity &identity,
+                                        CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) ||
+        (identity.generation == 0 && identity.checksum != 0)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphActiveIdentity, sourceDevice);
+    frame.length = 8;
+    encodeUint32(identity.generation, frame.data);
+    encodeUint32(identity.checksum, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphStagedIdentity(uint8_t sourceDevice,
+                                        const GraphIdentity &identity,
+                                        CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) ||
+        (identity.generation == 0 && identity.checksum != 0)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphStagedIdentity, sourceDevice);
+    frame.length = 8;
+    encodeUint32(identity.generation, frame.data);
+    encodeUint32(identity.checksum, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphRollbackIdentity(uint8_t sourceDevice,
+                                          const GraphIdentity &identity,
+                                          CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice) ||
+        (identity.generation == 0 && identity.checksum != 0)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphRollbackIdentity, sourceDevice);
+    frame.length = 8;
+    encodeUint32(identity.generation, frame.data);
+    encodeUint32(identity.checksum, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphManifestStatus(uint8_t sourceDevice, uint32_t activeDevices,
+                                        uint32_t stagedDevices, CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphManifestStatus, sourceDevice);
+    frame.length = 8;
+    encodeUint32(activeDevices, frame.data);
+    encodeUint32(stagedDevices, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphRollbackManifest(uint8_t sourceDevice,
+                                          uint32_t rollbackDevices,
+                                          CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphRollbackManifest, sourceDevice);
+    frame.length = 8;
+    encodeUint32(rollbackDevices, frame.data);
+    return true;
+}
+
+bool ProtocolCodec::graphTransportDrops(uint8_t sourceDevice, uint32_t rxDropped,
+                                        uint32_t txDropped, CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphTransportDrops, sourceDevice);
+    frame.length = 8;
+    encodeUint32(rxDropped, frame.data);
+    encodeUint32(txDropped, &frame.data[4]);
+    return true;
+}
+
+bool ProtocolCodec::graphTransportErrors(uint8_t sourceDevice, uint32_t busErrors,
+                                         CanFrame &frame) {
+    if (!isPhysicalDevice(sourceDevice)) {
+        return false;
+    }
+    frame = makeFrame(MessageType::GraphTransportErrors, sourceDevice);
+    frame.length = 8;
+    encodeUint32(busErrors, frame.data);
+    return true;
+}
 DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
     DecodeResult result{};
     if (!frame.extended) {
         result.error = ProtocolError::NotExtended;
         return result;
     }
+
     if ((frame.identifier & ~kCanIdentifierMask) != 0 ||
         (frame.identifier & kProtocolHeaderMask) != kProtocolHeader) {
         result.error = ProtocolError::InvalidIdentifier;
@@ -465,6 +610,7 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
     result.message.device =
         type == MessageType::ActionAck ? static_cast<uint8_t>(device & 0x1Fu) : device;
     GraphTransferMessage &graph = result.message.graph;
+    GraphNodeStatusMessage &node = result.message.graphNode;
     switch (type) {
         case MessageType::InputState:
         case MessageType::OutputState:
@@ -619,6 +765,67 @@ DecodeResult ProtocolCodec::decode(const CanFrame &frame) {
             graph.checksum = decodeUint32(&frame.data[2]);
             graph.sequence = decodeUint16(&frame.data[6]);
             if (graph.sequence > kGraphChunkSequenceCapacity) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        case MessageType::GraphNodeCapabilities:
+            node.format = decodeUint16(frame.data);
+            node.executorApi = decodeUint16(&frame.data[2]);
+            node.role = static_cast<GraphDeviceRole>(frame.data[4]);
+            if (node.format == 0 || node.executorApi == 0 ||
+                (node.role != GraphDeviceRole::Input &&
+                 node.role != GraphDeviceRole::Output) ||
+                frame.data[5] != 0 || frame.data[6] != 0 ||
+                frame.data[7] != 0) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        case MessageType::GraphNodeState:
+            node.transferId = decodeUint16(frame.data);
+            node.updateState = static_cast<GraphUpdateState>(frame.data[2]);
+            node.updateError = static_cast<GraphUpdateError>(frame.data[3]);
+            node.storeState = frame.data[4];
+            node.storeError = frame.data[5];
+            if (!validGraphState(node.updateState) ||
+                !validGraphError(node.updateError) || node.storeState > 5 ||
+                node.storeError > 18 || frame.data[6] != 0 ||
+                frame.data[7] != 0) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        case MessageType::GraphActiveIdentity:
+        case MessageType::GraphStagedIdentity:
+        case MessageType::GraphRollbackIdentity:
+            node.identity.generation = decodeUint32(frame.data);
+            node.identity.checksum = decodeUint32(&frame.data[4]);
+            if (node.identity.generation == 0 && node.identity.checksum != 0) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        case MessageType::GraphManifestStatus:
+            node.activeDevices = decodeUint32(frame.data);
+            node.stagedDevices = decodeUint32(&frame.data[4]);
+            break;
+        case MessageType::GraphRollbackManifest:
+            node.rollbackDevices = decodeUint32(frame.data);
+            if (frame.data[4] != 0 || frame.data[5] != 0 ||
+                frame.data[6] != 0 || frame.data[7] != 0) {
+                result.error = ProtocolError::InvalidPayload;
+                return result;
+            }
+            break;
+        case MessageType::GraphTransportDrops:
+            node.rxDropped = decodeUint32(frame.data);
+            node.txDropped = decodeUint32(&frame.data[4]);
+            break;
+        case MessageType::GraphTransportErrors:
+            node.busErrors = decodeUint32(frame.data);
+            if (frame.data[4] != 0 || frame.data[5] != 0 ||
+                frame.data[6] != 0 || frame.data[7] != 0) {
                 result.error = ProtocolError::InvalidPayload;
                 return result;
             }

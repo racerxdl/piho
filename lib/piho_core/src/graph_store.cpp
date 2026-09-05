@@ -531,10 +531,8 @@ GraphStoreError GraphStore::discardStaged() {
     const uint8_t discardedSlot = stagedSlot_;
     Metadata discarded = currentMetadata();
     discarded.stagedSlot = kGraphStoreNoSlot;
-    discarded.state = activeSlot_ != kGraphStoreNoSlot
-                          ? GraphStoreState::Active
-                          : (rollbackSlot_ != kGraphStoreNoSlot ? GraphStoreState::Rollback
-                                                                : GraphStoreState::Empty);
+    discarded.state = activeSlot_ != kGraphStoreNoSlot ? GraphStoreState::Active
+                                                        : GraphStoreState::Empty;
     discarded.lastError = GraphStoreError::None;
     const GraphStoreError error = commit(discarded);
     if (error != GraphStoreError::None) {
@@ -629,6 +627,19 @@ GraphStoreError GraphStore::rollback() {
     rollbackManifest_ = previousActiveManifest;
     refreshStatus();
     return GraphStoreError::None;
+}
+
+bool GraphStore::stagedDeviceRoleMatches(uint8_t device, GraphDeviceRole role) const {
+    if (stagedSlot_ == kGraphStoreNoSlot) {
+        return false;
+    }
+    for (uint16_t index = 0; index < stagedManifest_.deviceCount; ++index) {
+        const GraphDeviceRecord &candidate = stagedManifest_.devices[index];
+        if (candidate.id == device) {
+            return candidate.role == role;
+        }
+    }
+    return false;
 }
 
 GraphStoreError GraphStore::loadActiveInput(uint8_t device, LocalInputGraph &staging) {
