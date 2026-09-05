@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "piho/graph_store.h"
 #include "piho/trigger_table.h"
 
 class TriggerStorage {
@@ -17,5 +18,6 @@ class TriggerStorage {
     bool mounted_ = false;
 };
 
+extern piho::GraphStore graphStore;
 extern TriggerStorage triggerStorage;
 extern piho::TriggerTable triggerRules;

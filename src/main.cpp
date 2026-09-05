@@ -155,6 +155,11 @@ void setup() {
     Serial.begin(115200);
     initializeStatusLeds();
     const uint8_t deviceId = initializeDeviceAddress();
+    const piho::GraphStoreError graphStoreError = graphStore.begin();
+    if (graphStoreError != piho::GraphStoreError::None ||
+        graphStore.status().lastError != piho::GraphStoreError::None) {
+        reportApplicationError(DeviceErrorCode::Storage);
+    }
 
 #ifdef IS_INPUT_DEVICE
     initializeInputs();

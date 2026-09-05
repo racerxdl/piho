@@ -14,6 +14,7 @@
 void runGraphImageTests();
 void runFlowEngineTests();
 void runActionRuntimeTests();
+void runGraphStoreTests();
 
 namespace {
 
@@ -407,5 +408,6 @@ int main() {
     runGraphImageTests();
     runFlowEngineTests();
     runActionRuntimeTests();
+    runGraphStoreTests();
     return UNITY_END();
 }

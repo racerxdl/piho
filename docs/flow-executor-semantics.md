@@ -116,6 +116,12 @@ Activation occurs at one main-loop boundary:
 5. Reset graph-local event and timer state.
 6. Resume evaluation under the new generation.
 
+Every board persists the complete image in three LittleFS graph slots. Three slots are required to keep an immutable active graph and its rollback generation while a third generation is received. Chunks are limited to 256 bytes; CRC32 is accumulated while writing, and read-back validation uses the bounded `GraphImageSource` interface rather than allocating a complete-image buffer.
+
+Two CRC-protected metadata journal copies select the active, staged, rollback, and receiving slots by a monotonic sequence. Metadata replacement uses a verified temporary file and LittleFS atomic rename. A staged graph is never activated by reboot. Activation makes the previous active graph the rollback generation; rollback atomically swaps those two generations.
+
+On boot, an interrupted receive is discarded without changing the active or rollback graph. An invalid staged or rollback slot is removed from metadata. If the active slot is invalid but the recorded rollback slot validates, recovery promotes that rollback deterministically; otherwise autonomous execution remains disabled. Orphan image bytes are never inferred as active state when metadata is missing or corrupt.
+
 Outputs are not reset merely because a graph activates. They change only through an explicit action or normal safe boot initialization.
 
 ## Failure behavior
