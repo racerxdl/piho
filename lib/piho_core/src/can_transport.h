@@ -18,6 +18,7 @@ class CanTransport {
     virtual bool begin() = 0;
     virtual void poll() = 0;
     virtual bool trySend(const piho::CanFrame &frame) = 0;
+    virtual bool trySendLowPriority(const piho::CanFrame &frame) { return trySend(frame); }
     virtual bool tryReceive(piho::CanFrame &frame) = 0;
     virtual CanTransportStats stats() const = 0;
 };

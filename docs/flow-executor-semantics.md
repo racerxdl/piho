@@ -122,6 +122,18 @@ Two CRC-protected metadata journal copies select the active, staged, rollback, a
 
 On boot, an interrupted receive is discarded without changing the active or rollback graph. An invalid staged or rollback slot is removed from metadata. If the active slot is invalid but the recorded rollback slot validates, recovery promotes that rollback deterministically; otherwise autonomous execution remains disabled. Orphan image bytes are never inferred as active state when metadata is missing or corrupt.
 
+### Network staging protocol
+
+The USB-connected node is the gateway for one bounded update session. `GraphBegin` identifies a nonzero transfer ID, generation, and image size. Three companion frames announce graph format/executor API, the exact 32-bit expected-device bitmap, and image CRC32. A board begins writing only after all four parts agree. A second concurrent transfer or a conflicting repeated announcement is rejected.
+
+Image transport is stop-and-wait: each `GraphChunk` contains the transfer ID, a 16-bit sequence, and one to four bytes. The gateway advances only after every expected device reports the next sequence. An identical retry is idempotent; a conflicting duplicate, missing sequence, or out-of-order sequence is rejected. `GraphFinish` is accepted only at the exact calculated sequence count. Each board then performs independent bounded image validation and reports `staged` only when the identity and graph device bitmap match the announcement.
+
+Each node reports status as an identity frame and a progress frame. The gateway combines only matching transfer ID, generation, and checksum observations into ready, progressed, staged, rejected, active, rollback, and missing device bitmaps. It refuses activation unless the staged bitmap equals the announced expected-device bitmap and no expected board rejected the image.
+
+Activation and rollback carry generation plus checksum and are idempotent. The gateway retransmits them every 50 milliseconds until all expected boards report the requested identity; a board that missed an earlier broadcast therefore converges. Begin, chunk, finish, activation, rollback, and status retry state is fixed-size. Five seconds without progress rejects the session and discards only the receiving or staged candidate. Explicit abort has the same isolation property.
+
+Graph-transfer traffic uses CAN message types 16 through 27 and a distinct low-priority software queue. Runtime action/acknowledgement frames and health traffic are always dequeued first and also have lower CAN identifiers, so deployment cannot sit ahead of runtime work.
+
 Outputs are not reset merely because a graph activates. They change only through an explicit action or normal safe boot initialization.
 
 ## Failure behavior

@@ -7,6 +7,7 @@
 #include "global.h"
 #include "io.h"
 #include "piho.h"
+#include "piho/graph_update.h"
 #include "storage.h"
 #include "uart.h"
 
@@ -18,6 +19,9 @@ namespace {
 
 Can2040Transport canTransport(CAN_RXD, CAN_TXD, CAN_BAUD, F_CPU);
 PihoController controller(canTransport);
+piho::GraphUpdateParticipant graphUpdateParticipant;
+piho::GraphUpdateCoordinator graphUpdateCoordinator;
+uint32_t lastGraphUpdateRevision = 0;
 #ifdef IS_INPUT_DEVICE
 uint32_t lastInputCheck = 0;
 #else
@@ -104,6 +108,16 @@ bool onClearTriggers(void *) {
 }
 #endif
 
+bool writeGraphUpdateFrame(void *, const piho::CanFrame &frame) {
+    return controller.sendGraphUpdateFrame(frame);
+}
+
+void onGraphUpdate(void *, const piho::ProtocolMessage &message) {
+    const uint32_t now = millis();
+    graphUpdateParticipant.handle(message, now);
+    graphUpdateCoordinator.handle(message, now);
+}
+
 void onControllerError(void *, ControllerError error) {
     signalError();
     switch (error) {
@@ -127,6 +141,7 @@ PihoCallbacks callbacks() {
     result.onReset = onReset;
     result.onInputState = onInputState;
     result.onError = onControllerError;
+    result.onGraphUpdate = onGraphUpdate;
 #ifndef IS_INPUT_DEVICE
     result.onOutputState = onOutputState;
     result.onSetPin = onSetPin;
@@ -174,6 +189,11 @@ void setup() {
     if (!controller.begin(deviceId)) {
         reportApplicationError(DeviceErrorCode::Transport);
     }
+    graphUpdateCoordinator.configure(writeGraphUpdateFrame);
+    if (!graphUpdateParticipant.begin(deviceId, graphStore, writeGraphUpdateFrame,
+                                      nullptr, millis())) {
+        reportApplicationError(DeviceErrorCode::Storage);
+    }
 
 #ifdef IS_INPUT_DEVICE
     lastInputCheck = millis();
@@ -182,15 +202,21 @@ void setup() {
 }
 
 void loop() {
-    controller.poll();
-    handleUART(controller);
-
     const uint32_t now = millis();
+    controller.poll();
+    graphUpdateParticipant.service(now);
+    graphUpdateCoordinator.service(now);
+    handleUART(controller, graphUpdateCoordinator);
 #ifdef IS_INPUT_DEVICE
     if (static_cast<uint32_t>(now - lastInputCheck) >= IO_CHECK_INTERVAL_MS) {
         lastInputCheck = now;
         publishInputState(now);
     }
 #endif
+    const uint32_t graphRevision = graphUpdateCoordinator.revision();
+    if (graphRevision != lastGraphUpdateRevision) {
+        lastGraphUpdateRevision = graphRevision;
+        sendGraphUpdateEvent(graphUpdateCoordinator.status());
+    }
     serviceStatus(now);
 }

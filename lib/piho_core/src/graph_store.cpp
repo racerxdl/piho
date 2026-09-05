@@ -28,6 +28,14 @@ GraphIdentity identityFrom(const GraphManifest &manifest) {
                          manifest.checksum};
 }
 
+uint32_t deviceBitmapFrom(const GraphManifest &manifest) {
+    uint32_t bitmap = 0;
+    for (uint16_t index = 0; index < manifest.deviceCount; ++index) {
+        bitmap |= static_cast<uint32_t>(1u) << manifest.devices[index].id;
+    }
+    return bitmap;
+}
+
 bool descriptorsEqual(const GraphReceiveDescriptor &left,
                       const GraphReceiveDescriptor &right) {
     return left.imageSize == right.imageSize && left.generation == right.generation &&
@@ -226,6 +234,12 @@ void GraphStore::refreshStatus() {
                                                       : identityFrom(stagedManifest_);
     status_.rollback = rollbackSlot_ == kGraphStoreNoSlot ? GraphIdentity{}
                                                           : identityFrom(rollbackManifest_);
+    status_.activeDevices =
+        activeSlot_ == kGraphStoreNoSlot ? 0 : deviceBitmapFrom(activeManifest_);
+    status_.stagedDevices =
+        stagedSlot_ == kGraphStoreNoSlot ? 0 : deviceBitmapFrom(stagedManifest_);
+    status_.rollbackDevices =
+        rollbackSlot_ == kGraphStoreNoSlot ? 0 : deviceBitmapFrom(rollbackManifest_);
 }
 
 GraphStoreError GraphStore::begin() {
@@ -502,6 +516,34 @@ GraphStoreError GraphStore::cancelReceive() {
         return GraphStoreError::Busy;
     }
     return failReceive(GraphStoreError::Interrupted);
+}
+
+GraphStoreError GraphStore::discardStaged() {
+    if (!mounted_) {
+        return GraphStoreError::Mount;
+    }
+    if (status_.state == GraphStoreState::Receiving) {
+        return GraphStoreError::Busy;
+    }
+    if (stagedSlot_ == kGraphStoreNoSlot) {
+        return GraphStoreError::NoStagedGraph;
+    }
+    const uint8_t discardedSlot = stagedSlot_;
+    Metadata discarded = currentMetadata();
+    discarded.stagedSlot = kGraphStoreNoSlot;
+    discarded.state = activeSlot_ != kGraphStoreNoSlot
+                          ? GraphStoreState::Active
+                          : (rollbackSlot_ != kGraphStoreNoSlot ? GraphStoreState::Rollback
+                                                                : GraphStoreState::Empty);
+    discarded.lastError = GraphStoreError::None;
+    const GraphStoreError error = commit(discarded);
+    if (error != GraphStoreError::None) {
+        return error;
+    }
+    clearManifest(stagedManifest_);
+    backend_.eraseSlot(discardedSlot);
+    refreshStatus();
+    return GraphStoreError::None;
 }
 
 GraphStoreError GraphStore::activate() {

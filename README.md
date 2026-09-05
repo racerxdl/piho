@@ -67,7 +67,7 @@ Piho accepts only 29-bit extended data frames in its namespace:
 (0x150 << 20) | (version << 16) | (message_type << 8) | address
 ```
 
-Version is `1`. Except for acknowledgements, the address is a physical device ID (`0..31`); `0xFF` means broadcast only for health-check and reset. For `ActionAck`, the low five address bits select the source board and the high three bits carry the acknowledgement status. Every message has an exact payload length:
+Version is `1`. Ordinary addressed commands use a physical device ID (`0..31`). Health check, reset, and graph-update control frames may use broadcast `0xFF`; graph status frames carry the reporting physical device. For `ActionAck`, the low five address bits select the source board and the high three bits carry the acknowledgement status. Every message has an exact payload length:
 
 | Type | Payload |
 | --- | --- |
@@ -81,8 +81,20 @@ Version is `1`. Except for acknowledgements, the address is a physical device ID
 | Clear triggers | empty |
 | Execute action | 32-bit generation plus packed action ID, event token, source device, and source value |
 | Action acknowledgement | 32-bit generation plus packed action ID, event token, and output device; status is in the identifier |
+| Graph begin | transfer ID, generation, and image size |
+| Graph compatibility | transfer ID, graph format, executor API, reserved zero |
+| Graph devices | transfer ID, expected-device bitmap, reserved zero |
+| Graph checksum | transfer ID and image CRC32, reserved zero |
+| Graph chunk | transfer ID, sequence, and 1-4 image bytes |
+| Graph finish | transfer ID and total sequence count |
+| Graph abort/status request | transfer ID |
+| Graph activate/rollback | generation and image CRC32 |
+| Graph status identity | transfer ID, generation, state, and error |
+| Graph status progress | transfer ID, image CRC32, and next sequence |
 
 Frames with another namespace, remote-frame flag, unsupported type, invalid device, incorrect length, or invalid payload are rejected before dispatch.
+
+Runtime action frames use types 10 and 11. Graph-transfer frames use types 16 through 27 and a separate low-priority transmit queue, so actions and health traffic preempt an update even when update frames are already buffered.
 
 Global host addresses are mapped as follows:
 
@@ -99,9 +111,15 @@ USB serial carries length-delimited Nanopb messages, not diagnostic text:
 "PH" | version:u8 | payload_length:u16-le | protobuf_payload | crc16:u16-le
 ```
 
-The version is `1`, the payload limit is 128 bytes, and CRC-16/CCITT uses polynomial `0x1021` with initial value `0xFFFF`. The checksum covers version, encoded length, and payload. Host-to-device payloads are `HostCommand`; responses and asynchronous updates are `DeviceEvent`. See [`protocol/shift.proto`](protocol/shift.proto) for the command and event schema.
+The version is `1`, the payload limit is 128 bytes, and CRC-16/CCITT uses polynomial `0x1021` with initial value `0xFFFF`. The checksum covers version, encoded length, and payload. Host-to-device payloads are `HostCommand`; responses and asynchronous updates are `DeviceEvent`. Graph commands expose begin, chunk, finish, abort, activate, rollback, and status operations. `GraphUpdateEvent` reports transfer identity, progress, per-state device bitmaps, and a typed state/error. See [`protocol/shift.proto`](protocol/shift.proto) for the command and event schema.
 
 The parser consumes a bounded number of bytes per firmware loop, validates framing before protobuf decoding, and resynchronizes after malformed input.
+
+## Graph deployment
+
+Any USB-connected node can coordinate one network update session. The host starts a transfer with format, executor API, generation, image length, CRC32, and the exact bitmap of graph devices; then sends ordered four-byte chunks. Each chunk is stop-and-wait and idempotent. A duplicate with identical bytes is accepted, while missing, out-of-order, or conflicting data is rejected without modifying the active graph.
+
+Finish succeeds only after every expected board has acknowledged all chunks and independently validated the stored image. Activation is gated on every expected board reporting the same staged generation and checksum. Activate and rollback commands are retried until all expected boards report the target identity, so a board that misses the first broadcast converges. A five-second inactive transfer times out and discards only the receiving or staged candidate; explicit abort has the same active-graph safety property.
 
 ## Triggers and storage
 

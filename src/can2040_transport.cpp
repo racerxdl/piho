@@ -20,7 +20,8 @@ bool Can2040Transport::begin() {
     }
     if (!queuesInitialized_) {
         queue_init(&rxQueue_, sizeof(piho::CanFrame), PIHO_QUEUE_MAX_ITEMS);
-        queue_init(&txQueue_, sizeof(piho::CanFrame), PIHO_QUEUE_MAX_ITEMS);
+        queue_init(&highPriorityTxQueue_, sizeof(piho::CanFrame), PIHO_QUEUE_MAX_ITEMS);
+        queue_init(&lowPriorityTxQueue_, sizeof(piho::CanFrame), PIHO_QUEUE_MAX_ITEMS);
         queuesInitialized_ = true;
     }
 
@@ -42,7 +43,8 @@ void Can2040Transport::poll() {
 
     while (can2040_check_transmit(&bus_)) {
         piho::CanFrame frame{};
-        if (!queue_try_remove(&txQueue_, &frame)) {
+        const bool highPriority = queue_try_remove(&highPriorityTxQueue_, &frame);
+        if (!highPriority && !queue_try_remove(&lowPriorityTxQueue_, &frame)) {
             return;
         }
 
@@ -50,11 +52,24 @@ void Can2040Transport::poll() {
         if (!toDriverFrame(frame, message) || can2040_transmit(&bus_, &message) < 0) {
             txDropped_.fetch_add(1, std::memory_order_relaxed);
         }
+        if (!highPriority) {
+            return;
+        }
     }
 }
 
 bool Can2040Transport::trySend(const piho::CanFrame &frame) {
-    if (!started_ || frame.length > piho::kCanPayloadCapacity || !queue_try_add(&txQueue_, &frame)) {
+    if (!started_ || frame.length > piho::kCanPayloadCapacity ||
+        !queue_try_add(&highPriorityTxQueue_, &frame)) {
+        txDropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
+}
+
+bool Can2040Transport::trySendLowPriority(const piho::CanFrame &frame) {
+    if (!started_ || frame.length > piho::kCanPayloadCapacity ||
+        !queue_try_add(&lowPriorityTxQueue_, &frame)) {
         txDropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }

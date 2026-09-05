@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "piho.h"
+#include "piho/graph_update.h"
 
 enum class DeviceErrorCode : uint8_t {
     InvalidFrame,
@@ -11,6 +12,7 @@ enum class DeviceErrorCode : uint8_t {
     Transport,
     Storage,
     TriggerTableFull,
+    GraphUpdate,
 };
 
 enum class DeviceOperation : uint8_t {
@@ -21,10 +23,18 @@ enum class DeviceOperation : uint8_t {
     UpsertTrigger,
     RemoveTrigger,
     ClearTriggers,
+    GraphBegin,
+    GraphChunk,
+    GraphFinish,
+    GraphAbort,
+    GraphActivate,
+    GraphRollback,
+    GraphStatus,
 };
 
-void handleUART(PihoController &controller);
+void handleUART(PihoController &controller, piho::GraphUpdateCoordinator &graphUpdate);
 void sendInputStateEvent(uint8_t device, uint16_t state);
 void sendStatusEvent(const PihoController &controller);
 void sendErrorEvent(DeviceErrorCode code);
 void sendAckEvent(DeviceOperation operation, bool accepted);
+void sendGraphUpdateEvent(const piho::GraphGatewayStatus &status);

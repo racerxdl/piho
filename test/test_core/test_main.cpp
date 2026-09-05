@@ -6,6 +6,7 @@
 
 #include "piho/addressing.h"
 #include "piho/debouncer.h"
+#include "piho/graph_image.h"
 #include "piho/protocol.h"
 #include "piho/serial_framer.h"
 #include "piho/trigger_table.h"
@@ -15,6 +16,7 @@ void runGraphImageTests();
 void runFlowEngineTests();
 void runActionRuntimeTests();
 void runGraphStoreTests();
+void runGraphUpdateTests();
 
 namespace {
 
@@ -34,6 +36,11 @@ class FakeTransport final : public CanTransport {
         }
         sent[sentCount++] = frame;
         return true;
+    }
+
+    bool trySendLowPriority(const piho::CanFrame &frame) override {
+        ++lowPrioritySendCalls;
+        return trySend(frame);
     }
 
     bool tryReceive(piho::CanFrame &frame) override {
@@ -59,6 +66,7 @@ class FakeTransport final : public CanTransport {
     std::size_t receivedCount = 0;
     std::size_t receivedRead = 0;
     uint32_t pollCalls = 0;
+    uint32_t lowPrioritySendCalls = 0;
     bool beginResult = true;
     bool sendResult = true;
     bool began = false;
@@ -69,6 +77,7 @@ struct ControllerCapture {
     uint32_t byteCalls = 0;
     uint32_t inputCalls = 0;
     uint32_t errorCalls = 0;
+    uint32_t graphCalls = 0;
     uint8_t localPin = 0;
     uint8_t localByte = 0;
     uint8_t inputDevice = 0;
@@ -76,6 +85,7 @@ struct ControllerCapture {
     uint8_t byteValue = 0;
     bool pinValue = false;
     ControllerError lastError = ControllerError::InvalidFrame;
+    piho::MessageType graphType = piho::MessageType::HealthCheck;
 };
 
 void capturePin(void *context, uint8_t localPin, bool value) {
@@ -99,6 +109,12 @@ void captureInput(void *context, uint8_t device, uint16_t state) {
     capture.inputState = state;
 }
 
+void captureGraphUpdate(void *context, const piho::ProtocolMessage &message) {
+    auto &capture = *static_cast<ControllerCapture *>(context);
+    ++capture.graphCalls;
+    capture.graphType = message.type;
+}
+
 void captureError(void *context, ControllerError error) {
     auto &capture = *static_cast<ControllerCapture *>(context);
     ++capture.errorCalls;
@@ -110,6 +126,7 @@ PihoCallbacks captureCallbacks(ControllerCapture &capture) {
     callbacks.context = &capture;
     callbacks.onSetPin = capturePin;
     callbacks.onSetByte = captureByte;
+    callbacks.onGraphUpdate = captureGraphUpdate;
     callbacks.onInputState = captureInput;
     callbacks.onError = captureError;
     return callbacks;
@@ -387,6 +404,39 @@ void test_controller_dispatches_only_valid_addressed_frames() {
     controller.poll();
     TEST_ASSERT_EQUAL_UINT32(2, capture.errorCalls);
 }
+
+void test_controller_routes_graph_updates_through_the_low_priority_path() {
+    FakeTransport transport;
+    ControllerCapture capture;
+    PihoController controller(transport);
+    controller.setCallbacks(captureCallbacks(capture));
+    TEST_ASSERT_TRUE(controller.begin(2));
+
+    piho::GraphTransferDescriptor descriptor{};
+    descriptor.transferId = 7;
+    descriptor.format = piho::kGraphFormatVersion;
+    descriptor.executorApi = piho::kGraphExecutorApiVersion;
+    descriptor.generation = 3;
+    descriptor.imageSize = 244;
+    descriptor.checksum = 0xAE85369A;
+    descriptor.expectedDevices = 0x00000186;
+
+    piho::CanFrame begin{};
+    TEST_ASSERT_TRUE(piho::ProtocolCodec::graphBegin(descriptor, begin));
+    TEST_ASSERT_TRUE(controller.sendGraphUpdateFrame(begin));
+    TEST_ASSERT_EQUAL_UINT32(1, capture.graphCalls);
+    TEST_ASSERT_EQUAL_UINT32(1, transport.lowPrioritySendCalls);
+
+    transport.enqueue(begin);
+    controller.poll();
+    TEST_ASSERT_EQUAL_UINT32(2, capture.graphCalls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(piho::MessageType::GraphBegin),
+                            static_cast<uint8_t>(capture.graphType));
+
+    TEST_ASSERT_FALSE(
+        controller.sendGraphUpdateFrame(piho::ProtocolCodec::healthCheck()));
+    TEST_ASSERT_EQUAL_UINT32(1, transport.lowPrioritySendCalls);
+}
 }  // namespace
 
 void setUp() {}
@@ -405,9 +455,11 @@ int main() {
     RUN_TEST(test_trigger_storage_round_trips_and_rejects_corruption);
     RUN_TEST(test_controller_maps_global_outputs_and_avoids_self_echo);
     RUN_TEST(test_controller_dispatches_only_valid_addressed_frames);
+    RUN_TEST(test_controller_routes_graph_updates_through_the_low_priority_path);
     runGraphImageTests();
     runFlowEngineTests();
     runActionRuntimeTests();
     runGraphStoreTests();
+    runGraphUpdateTests();
     return UNITY_END();
 }

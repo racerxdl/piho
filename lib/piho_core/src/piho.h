@@ -26,6 +26,7 @@ struct PihoCallbacks {
     void (*onExecuteAction)(void *context, const piho::ActionRequest &request) = nullptr;
     void (*onActionAcknowledgement)(
         void *context, const piho::ActionAcknowledgement &acknowledgement) = nullptr;
+    void (*onGraphUpdate)(void *context, const piho::ProtocolMessage &message) = nullptr;
     void (*onError)(void *context, ControllerError error) = nullptr;
 };
 
@@ -48,6 +49,7 @@ class PihoController {
     bool clearTriggers(uint8_t outputDevice);
     bool executeAction(const piho::ActionRequest &request);
     bool acknowledgeAction(const piho::ActionAcknowledgement &acknowledgement);
+    bool sendGraphUpdateFrame(const piho::CanFrame &frame);
 
     uint8_t deviceId() const { return deviceId_; }
     CanTransportStats transportStats() const { return transport_.stats(); }

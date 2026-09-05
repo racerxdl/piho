@@ -17,6 +17,7 @@ class Can2040Transport final : public CanTransport {
     bool begin() override;
     void poll() override;
     bool trySend(const piho::CanFrame &frame) override;
+    bool trySendLowPriority(const piho::CanFrame &frame) override;
     bool tryReceive(piho::CanFrame &frame) override;
     CanTransportStats stats() const override;
 
@@ -36,7 +37,8 @@ class Can2040Transport final : public CanTransport {
     uint32_t systemClock_;
     can2040 bus_{};
     queue_t rxQueue_{};
-    queue_t txQueue_{};
+    queue_t highPriorityTxQueue_{};
+    queue_t lowPriorityTxQueue_{};
     bool queuesInitialized_ = false;
     bool started_ = false;
     std::atomic<uint32_t> receivedFrames_{0};

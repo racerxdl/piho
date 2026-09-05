@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "piho/can_frame.h"
@@ -16,6 +17,10 @@ constexpr uint32_t kProtocolHeader = (static_cast<uint32_t>(kProtocolNamespace) 
 constexpr uint32_t kProtocolHeaderMask = 0x1FFF0000u;
 constexpr uint8_t kGraphTransferMessageTypeMinimum = 16;
 constexpr uint32_t kActionEventTokenMaximum = (1u << 17) - 1;
+constexpr std::size_t kGraphChunkDataCapacity = 4;
+constexpr uint16_t kGraphChunkSequenceCapacity =
+    static_cast<uint16_t>((kGraphImageCapacity + kGraphChunkDataCapacity - 1) /
+                          kGraphChunkDataCapacity);
 
 enum class MessageType : uint8_t {
     HealthCheck = 1,
@@ -29,6 +34,18 @@ enum class MessageType : uint8_t {
     ClearTriggers = 9,
     ExecuteAction = 10,
     ActionAck = 11,
+    GraphBegin = 16,
+    GraphCompatibility = 17,
+    GraphDevices = 18,
+    GraphChecksum = 19,
+    GraphChunk = 20,
+    GraphFinish = 21,
+    GraphAbort = 22,
+    GraphActivate = 23,
+    GraphRollback = 24,
+    GraphStatusRequest = 25,
+    GraphStatusIdentity = 26,
+    GraphStatusProgress = 27,
 };
 
 static_assert(static_cast<uint8_t>(MessageType::ExecuteAction) <
@@ -55,6 +72,55 @@ enum class ActionAckStatus : uint8_t {
     WrongTarget = 5,
     InvalidAction = 6,
     UnavailableOutput = 7,
+};
+
+enum class GraphUpdateState : uint8_t {
+    Idle = 0,
+    Receiving = 1,
+    Validating = 2,
+    Staged = 3,
+    Active = 4,
+    Rollback = 5,
+    Rejected = 6,
+};
+
+enum class GraphUpdateError : uint8_t {
+    None = 0,
+    Conflict = 1,
+    InvalidDescriptor = 2,
+    StaleGeneration = 3,
+    Storage = 4,
+    OutOfOrder = 5,
+    ConflictingChunk = 6,
+    MissingChunk = 7,
+    InvalidImage = 8,
+    Timeout = 9,
+    NotStaged = 10,
+    NotReady = 11,
+    SendFailed = 12,
+    Aborted = 13,
+};
+
+struct GraphTransferDescriptor {
+    uint16_t transferId = 0;
+    uint16_t format = 0;
+    uint16_t executorApi = 0;
+    uint32_t generation = 0;
+    uint32_t imageSize = 0;
+    uint32_t checksum = 0;
+    uint32_t expectedDevices = 0;
+};
+
+struct GraphTransferMessage {
+    GraphTransferDescriptor descriptor{};
+    uint16_t transferId = 0;
+    uint16_t sequence = 0;
+    uint32_t generation = 0;
+    uint32_t checksum = 0;
+    GraphUpdateState state = GraphUpdateState::Idle;
+    GraphUpdateError error = GraphUpdateError::None;
+    uint8_t chunkSize = 0;
+    uint8_t chunk[kGraphChunkDataCapacity]{};
 };
 
 struct ActionRequest {
@@ -84,6 +150,7 @@ struct ProtocolMessage {
     TriggerRule trigger{};
     ActionRequest actionRequest{};
     ActionAcknowledgement actionAcknowledgement{};
+    GraphTransferMessage graph{};
 };
 
 struct DecodeResult {
@@ -107,6 +174,23 @@ class ProtocolCodec {
     static bool executeAction(const ActionRequest &request, CanFrame &frame);
     static bool actionAcknowledgement(const ActionAcknowledgement &acknowledgement,
                                       CanFrame &frame);
+    static bool graphBegin(const GraphTransferDescriptor &descriptor, CanFrame &frame);
+    static bool graphCompatibility(const GraphTransferDescriptor &descriptor, CanFrame &frame);
+    static bool graphDevices(const GraphTransferDescriptor &descriptor, CanFrame &frame);
+    static bool graphChecksum(const GraphTransferDescriptor &descriptor, CanFrame &frame);
+    static bool graphChunk(uint16_t transferId, uint16_t sequence, const uint8_t *data,
+                           uint8_t size, CanFrame &frame);
+    static bool graphFinish(uint16_t transferId, uint16_t sequenceCount, CanFrame &frame);
+    static bool graphAbort(uint16_t transferId, CanFrame &frame);
+    static bool graphActivate(const GraphIdentity &identity, CanFrame &frame);
+    static bool graphRollback(const GraphIdentity &identity, CanFrame &frame);
+    static bool graphStatusRequest(uint16_t transferId, CanFrame &frame);
+    static bool graphStatusIdentity(uint8_t sourceDevice, uint16_t transferId,
+                                    uint32_t generation, GraphUpdateState state,
+                                    GraphUpdateError error, CanFrame &frame);
+    static bool graphStatusProgress(uint8_t sourceDevice, uint16_t transferId,
+                                    uint32_t checksum, uint16_t nextSequence,
+                                    CanFrame &frame);
 
     static DecodeResult decode(const CanFrame &frame);
 

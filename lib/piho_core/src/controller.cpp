@@ -177,6 +177,24 @@ bool PihoController::acknowledgeAction(
     return piho::ProtocolCodec::actionAcknowledgement(acknowledgement, frame) && send(frame);
 }
 
+bool PihoController::sendGraphUpdateFrame(const piho::CanFrame &frame) {
+    const piho::DecodeResult decoded = piho::ProtocolCodec::decode(frame);
+    if (!decoded.ok() ||
+        static_cast<uint8_t>(decoded.message.type) <
+            piho::kGraphTransferMessageTypeMinimum) {
+        return false;
+    }
+    if (started_ && transport_.trySendLowPriority(frame)) {
+        if (callbacks_.onGraphUpdate != nullptr) {
+            callbacks_.onGraphUpdate(callbacks_.context, decoded.message);
+        }
+        return true;
+    }
+    lastStats_.txDropped = transport_.stats().txDropped;
+    reportError(ControllerError::Transport);
+    return false;
+}
+
 bool PihoController::send(const piho::CanFrame &frame) {
     if (started_ && transport_.trySend(frame)) {
         return true;
@@ -197,6 +215,13 @@ void PihoController::handle(const piho::CanFrame &frame) {
     }
 
     const piho::ProtocolMessage &message = decoded.message;
+    if (static_cast<uint8_t>(message.type) >=
+        piho::kGraphTransferMessageTypeMinimum) {
+        if (callbacks_.onGraphUpdate != nullptr) {
+            callbacks_.onGraphUpdate(callbacks_.context, message);
+        }
+        return;
+    }
     if (message.type == piho::MessageType::InputState) {
         if (callbacks_.onInputState != nullptr) {
             callbacks_.onInputState(callbacks_.context, message.device, message.state);

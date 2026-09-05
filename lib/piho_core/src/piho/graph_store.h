@@ -59,6 +59,9 @@ struct GraphStoreStatus {
     GraphIdentity active{};
     GraphIdentity staged{};
     GraphIdentity rollback{};
+    uint32_t activeDevices = 0;
+    uint32_t stagedDevices = 0;
+    uint32_t rollbackDevices = 0;
 };
 
 class GraphStoreBackend {
@@ -91,6 +94,7 @@ class GraphStore {
     GraphStoreError writeChunk(const uint8_t *data, std::size_t size);
     GraphStoreError finishReceive();
     GraphStoreError cancelReceive();
+    GraphStoreError discardStaged();
     GraphStoreError activate();
     GraphStoreError rollback();
 

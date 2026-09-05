@@ -53,6 +53,8 @@ ErrorEvent_Code errorCode(DeviceErrorCode code) {
             return ErrorEvent_Code_STORAGE;
         case DeviceErrorCode::TriggerTableFull:
             return ErrorEvent_Code_TRIGGER_TABLE_FULL;
+        case DeviceErrorCode::GraphUpdate:
+            return ErrorEvent_Code_GRAPH_UPDATE;
     }
     return ErrorEvent_Code_UNKNOWN;
 }
@@ -73,6 +75,20 @@ AckEvent_Operation operationCode(DeviceOperation operation) {
             return AckEvent_Operation_REMOVE_TRIGGER;
         case DeviceOperation::ClearTriggers:
             return AckEvent_Operation_CLEAR_TRIGGERS;
+        case DeviceOperation::GraphBegin:
+            return AckEvent_Operation_GRAPH_BEGIN;
+        case DeviceOperation::GraphChunk:
+            return AckEvent_Operation_GRAPH_CHUNK;
+        case DeviceOperation::GraphFinish:
+            return AckEvent_Operation_GRAPH_FINISH;
+        case DeviceOperation::GraphAbort:
+            return AckEvent_Operation_GRAPH_ABORT;
+        case DeviceOperation::GraphActivate:
+            return AckEvent_Operation_GRAPH_ACTIVATE;
+        case DeviceOperation::GraphRollback:
+            return AckEvent_Operation_GRAPH_ROLLBACK;
+        case DeviceOperation::GraphStatus:
+            return AckEvent_Operation_GRAPH_STATUS;
     }
     return AckEvent_Operation_NONE;
 }
@@ -82,7 +98,23 @@ bool validTriggerCommand(const TriggerCommand &command) {
            command.output_device < piho::kDeviceCount && command.output_pin < piho::kPinsPerDevice;
 }
 
-void processCommand(PihoController &controller, const uint8_t *payload, uint16_t payloadLength) {
+void reportGraphResult(DeviceOperation operation, piho::GraphUpdateError result,
+                       const piho::GraphUpdateCoordinator &graphUpdate) {
+    const bool accepted = result == piho::GraphUpdateError::None;
+    sendAckEvent(operation, accepted);
+    piho::GraphGatewayStatus status = graphUpdate.status();
+    if (!accepted) {
+        status.lastError = result;
+    }
+    sendGraphUpdateEvent(status);
+    if (!accepted) {
+        sendErrorEvent(DeviceErrorCode::GraphUpdate);
+    }
+}
+
+void processCommand(PihoController &controller,
+                    piho::GraphUpdateCoordinator &graphUpdate,
+                    const uint8_t *payload, uint16_t payloadLength) {
     HostCommand command = HostCommand_init_zero;
     pb_istream_t stream = pb_istream_from_buffer(payload, payloadLength);
     if (!pb_decode(&stream, HostCommand_fields, &command)) {
@@ -155,6 +187,77 @@ void processCommand(PihoController &controller, const uint8_t *payload, uint16_t
             sendAckEvent(DeviceOperation::ClearTriggers, controller.clearTriggers(static_cast<uint8_t>(device)));
             return;
         }
+        case HostCommand_graph_begin_tag: {
+            const GraphBeginCommand &request = command.command.graph_begin;
+            piho::GraphUpdateError result = piho::GraphUpdateError::InvalidDescriptor;
+            if (request.transfer_id <= UINT16_MAX && request.format <= UINT16_MAX &&
+                request.executor_api <= UINT16_MAX) {
+                piho::GraphTransferDescriptor descriptor{};
+                descriptor.transferId = static_cast<uint16_t>(request.transfer_id);
+                descriptor.format = static_cast<uint16_t>(request.format);
+                descriptor.executorApi = static_cast<uint16_t>(request.executor_api);
+                descriptor.generation = request.generation;
+                descriptor.imageSize = request.image_size;
+                descriptor.checksum = request.checksum;
+                descriptor.expectedDevices = request.expected_devices;
+                result = graphUpdate.beginUpdate(descriptor, millis());
+            }
+            reportGraphResult(DeviceOperation::GraphBegin, result, graphUpdate);
+            return;
+        }
+        case HostCommand_graph_chunk_tag: {
+            const GraphChunkCommand &request = command.command.graph_chunk;
+            piho::GraphUpdateError result = piho::GraphUpdateError::InvalidDescriptor;
+            if (request.transfer_id <= UINT16_MAX && request.sequence <= UINT16_MAX) {
+                result = graphUpdate.queueChunk(
+                    static_cast<uint16_t>(request.transfer_id),
+                    static_cast<uint16_t>(request.sequence), request.data.bytes,
+                    static_cast<uint8_t>(request.data.size), millis());
+            }
+            reportGraphResult(DeviceOperation::GraphChunk, result, graphUpdate);
+            return;
+        }
+        case HostCommand_graph_finish_tag: {
+            const GraphFinishCommand &request = command.command.graph_finish;
+            piho::GraphUpdateError result = piho::GraphUpdateError::InvalidDescriptor;
+            if (request.transfer_id <= UINT16_MAX &&
+                request.sequence_count <= UINT16_MAX) {
+                result = graphUpdate.finishUpdate(
+                    static_cast<uint16_t>(request.transfer_id),
+                    static_cast<uint16_t>(request.sequence_count), millis());
+            }
+            reportGraphResult(DeviceOperation::GraphFinish, result, graphUpdate);
+            return;
+        }
+        case HostCommand_graph_abort_tag: {
+            const uint32_t transferId = command.command.graph_abort.transfer_id;
+            const piho::GraphUpdateError result =
+                transferId <= UINT16_MAX
+                    ? graphUpdate.abortUpdate(static_cast<uint16_t>(transferId), millis())
+                    : piho::GraphUpdateError::InvalidDescriptor;
+            reportGraphResult(DeviceOperation::GraphAbort, result, graphUpdate);
+            return;
+        }
+        case HostCommand_graph_activate_tag:
+            reportGraphResult(DeviceOperation::GraphActivate,
+                              graphUpdate.activateUpdate(millis()), graphUpdate);
+            return;
+        case HostCommand_graph_rollback_tag: {
+            const GraphIdentityCommand &request = command.command.graph_rollback;
+            const piho::GraphIdentity target{0, 0, request.generation, request.checksum};
+            reportGraphResult(DeviceOperation::GraphRollback,
+                              graphUpdate.rollbackUpdate(target, millis()), graphUpdate);
+            return;
+        }
+        case HostCommand_graph_status_tag: {
+            const uint32_t transferId = command.command.graph_status.transfer_id;
+            const piho::GraphUpdateError result =
+                transferId <= UINT16_MAX
+                    ? graphUpdate.requestStatus(static_cast<uint16_t>(transferId), millis())
+                    : piho::GraphUpdateError::InvalidDescriptor;
+            reportGraphResult(DeviceOperation::GraphStatus, result, graphUpdate);
+            return;
+        }
         default:
             sendErrorEvent(DeviceErrorCode::InvalidCommand);
             return;
@@ -163,7 +266,8 @@ void processCommand(PihoController &controller, const uint8_t *payload, uint16_t
 
 }  // namespace
 
-void handleUART(PihoController &controller) {
+void handleUART(PihoController &controller,
+                piho::GraphUpdateCoordinator &graphUpdate) {
     for (std::size_t processed = 0; processed < MAX_UART_BYTES_PER_POLL && Serial.available() > 0; ++processed) {
         const int value = Serial.read();
         if (value < 0) {
@@ -173,7 +277,7 @@ void handleUART(PihoController &controller) {
         piho::SerialFrameView frame{};
         const piho::FrameParseStatus status = parser.push(static_cast<uint8_t>(value), frame);
         if (status == piho::FrameParseStatus::Complete) {
-            processCommand(controller, frame.data, frame.length);
+            processCommand(controller, graphUpdate, frame.data, frame.length);
         } else if (status != piho::FrameParseStatus::None) {
             sendErrorEvent(DeviceErrorCode::InvalidFrame);
         }
@@ -208,6 +312,29 @@ void sendStatusEvent(const PihoController &controller) {
     sendDeviceEvent(event);
 }
 
+
+void sendGraphUpdateEvent(const piho::GraphGatewayStatus &status) {
+    DeviceEvent event = DeviceEvent_init_zero;
+    event.which_event = DeviceEvent_graph_update_tag;
+    GraphUpdateEvent &update = event.event.graph_update;
+    update.transfer_id = status.descriptor.transferId;
+    update.generation = status.descriptor.generation;
+    update.checksum = status.descriptor.checksum;
+    update.expected_devices = status.descriptor.expectedDevices;
+    update.ready_devices = status.readyDevices;
+    update.progressed_devices = status.progressedDevices;
+    update.staged_devices = status.stagedDevices;
+    update.rejected_devices = status.rejectedDevices;
+    update.active_devices = status.activeDevices;
+    update.rollback_devices = status.rollbackDevices;
+    update.missing_devices = status.missingDevices;
+    update.next_sequence = status.nextSequence;
+    update.sequence_count = status.sequenceCount;
+    update.state = static_cast<::GraphUpdateState>(status.state);
+    update.error = static_cast<::GraphUpdateError>(status.lastError);
+    update.chunk_pending = status.chunkPending;
+    sendDeviceEvent(event);
+}
 void sendErrorEvent(DeviceErrorCode code) {
     DeviceEvent event = DeviceEvent_init_zero;
     event.which_event = DeviceEvent_error_tag;
